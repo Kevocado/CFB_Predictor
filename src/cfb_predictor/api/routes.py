@@ -91,6 +91,16 @@ def _lines_for_game(odds_df: pd.DataFrame, home_team: str, away_team: str) -> tu
     ]
     if matches.empty:
         return None, None
+    # _team_name_matches is a prefix match, not an exact one -- two distinct
+    # FBS teams can share a short-name prefix (e.g. "Miami" matches both
+    # "Miami Hurricanes" and "Miami (OH) RedHawks"). If the matched rows
+    # disagree on which real (home_team, away_team) pair they belong to,
+    # trusting the first row would silently attach a DIFFERENT game's line
+    # to this one -- worse than the graceful (None, None) this function is
+    # documented to return on a genuine miss. Refuse to guess: treat an
+    # ambiguous match the same as no match.
+    if matches[["home_team", "away_team"]].drop_duplicates().shape[0] > 1:
+        return None, None
 
     spread_line = None
     spread_rows = matches[

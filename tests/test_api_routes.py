@@ -148,3 +148,25 @@ def test_lines_for_game_returns_none_for_genuinely_non_matching_teams():
 
     assert spread_line is None
     assert total_line is None
+
+
+def test_lines_for_game_refuses_to_guess_between_ambiguous_prefix_matches():
+    """_team_name_matches is a prefix match, not an exact one -- two
+    distinct FBS teams can share a short-name prefix (e.g. CFBD's "Miami"
+    matches both "Miami Hurricanes" and "Miami (OH) RedHawks"). If the
+    odds feed's matched rows disagree on which real (home, away) pair
+    they belong to, _lines_for_game must refuse to guess rather than
+    silently attach a different game's line to this one."""
+    odds_df = pd.DataFrame(
+        [
+            {"home_team": "Miami Hurricanes", "away_team": "Clemson Tigers", "market": "spreads",
+             "outcome_name": "Miami Hurricanes", "point": -3.5},
+            {"home_team": "Miami (OH) RedHawks", "away_team": "Clemson Tigers", "market": "spreads",
+             "outcome_name": "Miami (OH) RedHawks", "point": 10.0},
+        ]
+    )
+
+    spread_line, total_line = routes._lines_for_game(odds_df, "Miami", "Clemson")
+
+    assert spread_line is None
+    assert total_line is None
