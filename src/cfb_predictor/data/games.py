@@ -1,0 +1,162 @@
+"""games.py — CFB schedule/results and FBS team universe, cache-or-fetch
+from CollegeFootballData (CFBD) via the cfbd Python package.
+
+One parquet file per season under GAMES_CACHE_DIR/TEAMS_CACHE_DIR, mirroring
+nfl_predictor's data/schedules.py per-season cache-or-fetch pattern — a
+season's results never change once played, and a season's FBS membership
+never changes once the season starts, so per-season caching is safe. This
+caching is *load-bearing* here, not just a latency optimization: CFBD's free
+tier caps API access at 1,000 calls/month, so every fetch below is exactly
+one call per season (never per-team or per-game).
+
+CFBD's Game model already exposes `conference_game` as a real boolean and
+`home_division`/`away_division` directly — unlike NFL's div_game (which
+nfl_data_py also supplies pre-computed), no team-conference join is needed
+to populate `conference_game` here either. `fetch_fbs_teams` is kept as the
+authoritative FBS team-universe source (features/build.py uses it to exclude
+FCS-opponent games from training rows), with the per-game division fields
+available as a fallback/cross-check when a team-universe lookup isn't
+supplied.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from ..config import CFBD_API_KEY, CURRENT_SEASON, GAMES_CACHE_DIR, TEAMS_CACHE_DIR
+
+KEEP_COLUMNS = [
+    "game_id", "season", "week", "gameday", "home_team", "away_team",
+    "home_score", "away_score", "home_conference", "away_conference",
+    "home_division", "away_division", "conference_game", "neutral_site",
+]
+
+TEAM_KEEP_COLUMNS = ["team", "conference", "division", "classification"]
+
+
+def _cfbd_configuration():
+    """Isolated in its own function so a mismatch between this plan's
+    assumed cfbd package shape and the installed version (see this plan's
+    "Implementation notes" section) is a one-line fix, not a scattered one."""
+    import cfbd
+
+    return cfbd.Configuration(access_token=CFBD_API_KEY)
+
+
+def _import_games(season: int) -> pd.DataFrame:
+    """One call per season — cfbd.GamesApi.get_games(year=season) returns
+    every week of that season's games in a single response, so this never
+    needs a per-week loop. Thin wrapper so tests can monkeypatch just this
+    one function rather than the whole cfbd client."""
+    import cfbd
+
+    with cfbd.ApiClient(_cfbd_configuration()) as api_client:
+        games_api = cfbd.GamesApi(api_client)
+        fetched = games_api.get_games(year=season)
+    return pd.DataFrame([g.to_dict() for g in fetched])
+
+
+def _import_fbs_teams(season: int) -> pd.DataFrame:
+    """One call per season — cfbd.TeamsApi.get_fbs_teams(year=season) is
+    this project's team-universe source. FBS teams move conferences (and
+    occasionally divisions) year to year, so hardcoding a list would go
+    stale; this is the "one additional data-module function" the design
+    spec calls for rather than a separate task."""
+    import cfbd
+
+    with cfbd.ApiClient(_cfbd_configuration()) as api_client:
+        teams_api = cfbd.TeamsApi(api_client)
+        fetched = teams_api.get_fbs_teams(year=season)
+    return pd.DataFrame([t.to_dict() for t in fetched])
+
+
+def _games_cache_path(season: int):
+    return GAMES_CACHE_DIR / f"{season}.parquet"
+
+
+def _teams_cache_path(season: int):
+    return TEAMS_CACHE_DIR / f"{season}.parquet"
+
+
+def _normalize_games(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw.rename(
+        columns={
+            "id": "game_id",
+            "start_date": "gameday",
+            "home_points": "home_score",
+            "away_points": "away_score",
+        }
+    )
+    for col in KEEP_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[KEEP_COLUMNS].copy()
+    df["gameday"] = pd.to_datetime(df["gameday"])
+    df["game_id"] = df["game_id"].astype(str)
+    return df
+
+
+def fetch_schedules(seasons: list[int], force_refresh: bool = False) -> pd.DataFrame:
+    """One row per game across every requested season. Seasons already
+    cached on disk are read from cache; anything missing (or force_refresh)
+    is fetched from CFBD one season at a time — CFBD's get_games only takes
+    a single `year`, so a per-season loop is inherent to the endpoint, not a
+    violation of the one-call-per-season budget."""
+    frames = []
+    for season in seasons:
+        path = _games_cache_path(season)
+        if not force_refresh and path.exists():
+            frames.append(pd.read_parquet(path))
+            continue
+        fetched = _normalize_games(_import_games(season))
+        fetched.to_parquet(path)
+        frames.append(pd.read_parquet(path))
+
+    if not frames:
+        return pd.DataFrame(columns=KEEP_COLUMNS)
+    return pd.concat(frames, ignore_index=True).sort_values(["season", "week", "gameday"]).reset_index(drop=True)
+
+
+def fetch_fbs_teams(season: int, force_refresh: bool = False) -> pd.DataFrame:
+    """This season's FBS team universe (team, conference, division,
+    classification) — used to cross-check conference_game and to exclude
+    FCS-opponent games from training. Cached per season since conference
+    realignment only happens between seasons, not mid-season."""
+    path = _teams_cache_path(season)
+    if not force_refresh and path.exists():
+        return pd.read_parquet(path)
+
+    raw = _import_fbs_teams(season)
+    df = raw.rename(columns={"school": "team"})
+    for col in TEAM_KEEP_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[TEAM_KEEP_COLUMNS].copy()
+    df.to_parquet(path)
+    return df
+
+
+def default_completed_seasons(n: int = 8) -> list[int]:
+    return list(range(CURRENT_SEASON - n, CURRENT_SEASON))
+
+
+def load_training_data(seasons: list[int]) -> pd.DataFrame:
+    """Only games with a final score — excludes future/postponed games from
+    the same fetch_schedules() call."""
+    df = fetch_schedules(seasons)
+    return df[df["home_score"].notna() & df["away_score"].notna()].reset_index(drop=True)
+
+
+def fetch_current_season_partial() -> pd.DataFrame:
+    """Completed games so far in CURRENT_SEASON, refetched every call (no
+    per-season cache for the still-in-progress season, since its cache file
+    would go stale after every week's games)."""
+    df = fetch_schedules([CURRENT_SEASON], force_refresh=True)
+    return df[df["home_score"].notna() & df["away_score"].notna()].reset_index(drop=True)
+
+
+def fetch_upcoming_games(season: int, week: int) -> pd.DataFrame:
+    """Games in a given season/week that haven't been played yet."""
+    df = fetch_schedules([season], force_refresh=(season == CURRENT_SEASON))
+    week_df = df[df["week"] == week]
+    return week_df[week_df["home_score"].isna()].reset_index(drop=True)
