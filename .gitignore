@@ -8,5 +8,6 @@ data/*.db*
 .pytest_cache/
 frontend/node_modules/
 frontend/dist/
-models/
+/models/*.json
+/models/*.pkl
 .DS_Store
