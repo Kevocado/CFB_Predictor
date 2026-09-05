@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.egg-info/
+data/cache/
+data/tracking.db*
+.pytest_cache/
+frontend/node_modules/
+.git/
