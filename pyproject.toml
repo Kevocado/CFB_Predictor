@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "cfbd>=5.0.0",
     "pandas",
+    "pyarrow",
     "numpy",
     "scipy",
     "xgboost",
