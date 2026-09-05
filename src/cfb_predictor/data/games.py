@@ -21,9 +21,19 @@ supplied.
 
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 
 from ..config import CFBD_API_KEY, CURRENT_SEASON, GAMES_CACHE_DIR, TEAMS_CACHE_DIR
+
+# Re-fetch the in-progress season at most this often. CFBD's free tier caps
+# API access at 1,000 calls/month; unconditionally force-refreshing the
+# current season on every request (as this module originally did) burns
+# through that budget in about a day once the background tracking loop
+# (api/main.py, every _TRACKING_INTERVAL_SECONDS) is added in -- see this
+# plan's final-review fix (Task 23, findings C1+C2).
+_CURRENT_SEASON_TTL_SECONDS = 6 * 60 * 60
 
 KEEP_COLUMNS = [
     "game_id", "season", "week", "gameday", "home_team", "away_team",
@@ -181,16 +191,30 @@ def load_training_data(seasons: list[int]) -> pd.DataFrame:
     return df[df["home_score"].notna() & df["away_score"].notna()].reset_index(drop=True)
 
 
+def _current_season_needs_refresh() -> bool:
+    """True when CURRENT_SEASON's cache file is missing or older than
+    _CURRENT_SEASON_TTL_SECONDS. Shared by fetch_current_season_partial and
+    fetch_upcoming_games so the in-progress season is re-fetched on a TTL
+    instead of on every single call."""
+    path = _games_cache_path(CURRENT_SEASON)
+    return not path.exists() or (time.time() - path.stat().st_mtime) > _CURRENT_SEASON_TTL_SECONDS
+
+
 def fetch_current_season_partial() -> pd.DataFrame:
-    """Completed games so far in CURRENT_SEASON, refetched every call (no
-    per-season cache for the still-in-progress season, since its cache file
-    would go stale after every week's games)."""
-    df = fetch_schedules([CURRENT_SEASON], force_refresh=True)
+    """Completed games so far in CURRENT_SEASON. Re-fetched at most every
+    _CURRENT_SEASON_TTL_SECONDS (not on every call, which would burn the
+    1,000-calls/month cap in about a day given the background tick's
+    interval -- see this plan's final-review fix, Task 23)."""
+    df = fetch_schedules([CURRENT_SEASON], force_refresh=_current_season_needs_refresh())
     return df[df["home_score"].notna() & df["away_score"].notna()].reset_index(drop=True)
 
 
 def fetch_upcoming_games(season: int, week: int) -> pd.DataFrame:
-    """Games in a given season/week that haven't been played yet."""
-    df = fetch_schedules([season], force_refresh=(season == CURRENT_SEASON))
+    """Games in a given season/week that haven't been played yet. Uses the
+    same TTL as fetch_current_season_partial for CURRENT_SEASON rather than
+    unconditionally force-refreshing (see this plan's final-review fix,
+    Task 23, findings C1+C2)."""
+    force = season == CURRENT_SEASON and _current_season_needs_refresh()
+    df = fetch_schedules([season], force_refresh=force)
     week_df = df[df["week"] == week]
     return week_df[week_df["home_score"].isna()].reset_index(drop=True)

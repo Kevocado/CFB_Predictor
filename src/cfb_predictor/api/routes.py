@@ -9,6 +9,7 @@ instead, matched by team name.
 from __future__ import annotations
 
 import logging
+import time
 from functools import lru_cache
 
 import pandas as pd
@@ -27,26 +28,75 @@ router = APIRouter(prefix="/api")
 
 logger = logging.getLogger(__name__)
 
+# Re-fetch the current season's weekly player stats at most this often,
+# same TTL rationale as data/games.py's _CURRENT_SEASON_TTL_SECONDS --
+# unconditionally force-refreshing here cost ~15-20 CFBD calls per single
+# Player Props page view once Task 17 changed the fetch to one call per
+# week (see this plan's final-review fix, Task 23, findings C1+C2).
+_CURRENT_SEASON_PLAYER_STATS_TTL_SECONDS = 6 * 60 * 60
+
+
+def _player_stats_needs_refresh(season: int) -> bool:
+    path = player_stats._season_cache_path(season)
+    return not path.exists() or (time.time() - path.stat().st_mtime) > _CURRENT_SEASON_PLAYER_STATS_TTL_SECONDS
+
 
 @lru_cache(maxsize=1)
 def _load_models_cached() -> dict:
     return manifest.load_models()
 
 
+def _load_models_or_503() -> dict:
+    """manifest.load_models() raises FileNotFoundError when no manifest has
+    ever been trained -- turn that into a friendly 503 instead of letting it
+    propagate as a bare unhandled 500. Does not address the larger "ship
+    models in the image" / persistent-disk deploy question -- that's out of
+    scope for this fix (see this plan's final-review fix, Task 23, finding
+    C3)."""
+    try:
+        return _load_models_cached()
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503, detail="No trained model yet — run POST /api/retrain first"
+        ) from exc
+
+
+def _team_name_matches(cfbd_name: str, odds_name: str) -> bool:
+    """Best-effort match between CFBD's short school name (e.g. "Texas")
+    and The Odds API's full team name (e.g. "Texas Longhorns") -- these
+    are different naming conventions with no shared id space. Matches
+    when the CFBD name's words are a prefix of the Odds API name's words
+    (case-insensitive), which covers the common case without a full
+    manual mapping table. Real gap acknowledged in the plan/ledger: this
+    will still miss genuinely divergent names (e.g. abbreviations,
+    "St." vs "State") -- degrades gracefully to no line found, same as
+    a missing key or empty odds_df already does."""
+    cfbd_words = cfbd_name.lower().split()
+    odds_words = odds_name.lower().split()
+    return odds_words[: len(cfbd_words)] == cfbd_words
+
+
 def _lines_for_game(odds_df: pd.DataFrame, home_team: str, away_team: str) -> tuple[float | None, float | None]:
     """CFBD's Game model (unlike nflverse's schedule frame) carries no
     market spread/total -- pull them from The Odds API's own spreads/totals
-    markets instead, matched by team name. Best-effort: returns (None, None)
-    for either line the odds feed doesn't have for this matchup (a common
-    case outside Power-conference games, per the design spec)."""
+    markets instead, matched by team name (best-effort -- see
+    _team_name_matches). Best-effort: returns (None, None) for either line
+    the odds feed doesn't have for this matchup (a common case outside
+    Power-conference games, per the design spec)."""
     if odds_df is None or odds_df.empty:
         return None, None
-    matches = odds_df[(odds_df["home_team"] == home_team) & (odds_df["away_team"] == away_team)]
+    matches = odds_df[
+        odds_df["home_team"].map(lambda t: _team_name_matches(home_team, t))
+        & odds_df["away_team"].map(lambda t: _team_name_matches(away_team, t))
+    ]
     if matches.empty:
         return None, None
 
     spread_line = None
-    spread_rows = matches[(matches["market"] == "spreads") & (matches["outcome_name"] == home_team)]
+    spread_rows = matches[
+        (matches["market"] == "spreads")
+        & matches["outcome_name"].map(lambda t: _team_name_matches(home_team, t))
+    ]
     if not spread_rows.empty:
         spread_line = float(spread_rows.iloc[0]["point"])
 
@@ -108,7 +158,9 @@ def _load_player_history(season: int) -> pd.DataFrame:
         current_games = games_data.fetch_current_season_partial()
         games_df = pd.concat([historical_games, current_games], ignore_index=True)
         historical_df = player_stats.fetch_weekly_player_stats(history_seasons, games_df)
-        current_df = player_stats.fetch_weekly_player_stats([season], games_df, force_refresh=True)
+        current_df = player_stats.fetch_weekly_player_stats(
+            [season], games_df, force_refresh=_player_stats_needs_refresh(season)
+        )
         return pd.concat([historical_df, current_df], ignore_index=True)
     all_seasons = history_seasons + [season]
     games_df = games_data.load_training_data(all_seasons)
@@ -130,7 +182,7 @@ def get_game_prediction(season: int, week: int, game_id: str):
         raise HTTPException(status_code=404, detail=f"Unknown game_id: {game_id}")
     game = matches.iloc[0]
 
-    models = _load_models_cached()
+    models = _load_models_or_503()
     history = _load_game_history(season)
     odds_df = odds_api.fetch_game_odds()
     spread_line, total_line = _lines_for_game(odds_df, game["home_team"], game["away_team"])
@@ -143,7 +195,7 @@ def get_game_prediction(season: int, week: int, game_id: str):
 
 @router.get("/players/{season}/{week}/props")
 def get_player_props(season: int, week: int):
-    models = _load_models_cached()
+    models = _load_models_or_503()
     player_history = _load_player_history(season)
 
     latest_players = (
@@ -200,7 +252,10 @@ def background_tracking_tick(season: int, week: int) -> None:
             except Exception:
                 logger.exception("prediction failed for game_id=%s", game.get("game_id"))
                 continue
-        store.record_game_predictions(predictions)
+        try:
+            store.record_game_predictions(predictions)
+        except Exception:
+            logger.exception("record_game_predictions failed")
 
     completed = games_data.fetch_current_season_partial()
     store.reconcile_game_predictions(completed[["game_id", "home_score", "away_score"]])

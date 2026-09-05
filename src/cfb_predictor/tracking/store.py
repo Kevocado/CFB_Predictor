@@ -73,10 +73,22 @@ def _require_pre_kickoff(commence_time: str) -> None:
 
 
 def record_game_predictions(games: list[dict]) -> int:
+    """Snapshots only the games that are still pre-kickoff. A single
+    already-kicked-off (or malformed) game in the batch used to raise for
+    the whole call, silently dropping every other valid game in the same
+    tick along with it -- skip just the invalid ones instead (see this
+    plan's final-review fix, Task 23, finding I4)."""
     if not games:
         return 0
+    valid_games = []
     for game in games:
-        _require_pre_kickoff(game["commence_time"])
+        try:
+            _require_pre_kickoff(game["commence_time"])
+            valid_games.append(game)
+        except ValueError:
+            continue
+    if not valid_games:
+        return 0
     now = datetime.now(timezone.utc).isoformat()
     rows = [
         (
@@ -85,7 +97,7 @@ def record_game_predictions(games: list[dict]) -> int:
             game.get("home_cover_prob"), game.get("away_cover_prob"),
             game.get("over_prob"), game.get("under_prob"),
         )
-        for game in games
+        for game in valid_games
     ]
     with contextlib.closing(_connect()) as conn, conn:
         cursor = conn.executemany(

@@ -18,7 +18,7 @@ from .routes import router, warm_caches, background_tracking_tick
 
 logger = logging.getLogger(__name__)
 
-_TRACKING_INTERVAL_SECONDS = 300
+_TRACKING_INTERVAL_SECONDS = 3600
 
 
 def _current_season_and_week() -> tuple[int, int]:

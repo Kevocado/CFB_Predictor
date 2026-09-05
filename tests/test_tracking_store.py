@@ -30,11 +30,31 @@ def test_record_game_predictions_is_idempotent():
     assert n2 == 0
 
 
-def test_record_game_predictions_rejects_snapshots_after_kickoff():
+def test_record_game_predictions_skips_snapshots_after_kickoff():
+    """A batch of only past-kickoff games is skipped entirely (returns 0)
+    rather than raising -- record_game_predictions no longer raises for the
+    whole batch over one bad game (see this plan's final-review fix,
+    Task 23, finding I4; this replaces the old raise-based assertion)."""
     game = _game() | {"commence_time": "2000-08-30T16:00:00"}
 
-    with pytest.raises(ValueError, match="before kickoff"):
-        store.record_game_predictions([game])
+    n = store.record_game_predictions([game])
+
+    assert n == 0
+
+
+def test_record_game_predictions_skips_past_kickoff_game_but_keeps_valid_one():
+    """One malformed/past-kickoff game in a batch used to raise for the
+    whole call, dropping every other valid game in the same tick along
+    with it -- it should instead be skipped, recording only the valid
+    game (see this plan's final-review fix, Task 23, finding I4)."""
+    past_kickoff_game = _game() | {"game_id": "past123", "commence_time": "2000-08-30T16:00:00"}
+    valid_game = _game()
+
+    n = store.record_game_predictions([past_kickoff_game, valid_game])
+
+    assert n == 1
+    record = store.get_track_record()
+    assert record is not None  # sanity: db is usable after the mixed batch
 
 
 def test_reconcile_game_predictions_fills_actual_outcome():

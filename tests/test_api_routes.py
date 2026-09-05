@@ -109,3 +109,42 @@ def test_lines_for_game_returns_none_when_odds_missing():
 
     assert spread_line is None
     assert total_line is None
+
+
+def test_lines_for_game_matches_cfbd_school_name_to_odds_api_full_name():
+    """CFBD's Game model carries short school names ("Texas") while The
+    Odds API uses full team names ("Texas Longhorns") -- exact-string
+    matching between the two never matches in practice (see this plan's
+    final-review fix, Task 23, finding I5)."""
+    odds_df = pd.DataFrame(
+        [
+            {"home_team": "Texas Longhorns", "away_team": "Ohio State Buckeyes", "market": "spreads",
+             "outcome_name": "Texas Longhorns", "point": -3.5},
+            {"home_team": "Texas Longhorns", "away_team": "Ohio State Buckeyes", "market": "totals",
+             "outcome_name": "Over", "point": 51.5},
+        ]
+    )
+
+    spread_line, total_line = routes._lines_for_game(odds_df, "Texas", "Ohio State")
+
+    assert spread_line == -3.5
+    assert total_line == 51.5
+
+
+def test_lines_for_game_returns_none_for_genuinely_non_matching_teams():
+    assert routes._team_name_matches("Texas", "Oklahoma Sooners") is False
+
+    # Odds feed only has a different matchup on file -- no row should match
+    # "Texas" vs "Oklahoma", so this should degrade to (None, None) same as
+    # a missing key or empty odds_df.
+    odds_df = pd.DataFrame(
+        [
+            {"home_team": "Oklahoma Sooners", "away_team": "Alabama Crimson Tide", "market": "spreads",
+             "outcome_name": "Oklahoma Sooners", "point": -3.5},
+        ]
+    )
+
+    spread_line, total_line = routes._lines_for_game(odds_df, "Texas", "Oklahoma")
+
+    assert spread_line is None
+    assert total_line is None
