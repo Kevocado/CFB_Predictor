@@ -117,6 +117,12 @@ def build_features_for_game(home_team: str, away_team: str, games_df: pd.DataFra
         if appearances.empty:
             return None
         last_game = pd.to_datetime(appearances.iloc[-1]["gameday"])
+        # Real CFBD gamedays parse as tz-aware (UTC) timestamps; test
+        # fixtures use tz-naive ones. Strip tz so both compare cleanly
+        # against the tz-naive "now" below -- confirmed against real data
+        # in Task 17 (TypeError: Cannot subtract tz-naive and tz-aware).
+        if last_game.tzinfo is not None:
+            last_game = last_game.tz_localize(None)
         return float((pd.Timestamp.now().normalize() - last_game).days)
 
     home_scored, home_allowed = _recent_form(home_team)
