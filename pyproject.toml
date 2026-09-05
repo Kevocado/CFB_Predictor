@@ -17,7 +17,11 @@ dependencies = [
     "scikit-learn",
     "requests",
     "python-dotenv",
-    "fastapi",
+    # cfbd 5.x requires pydantic<2; fastapi>=0.120 dropped its pydantic v1
+    # compat shim, so it must stay pinned below that to avoid a resolver
+    # picking an incompatible pair (discovered in Task 17's real-env run).
+    "pydantic<2,>=1.10.5",
+    "fastapi<0.116",
     "uvicorn[standard]",
 ]
 
