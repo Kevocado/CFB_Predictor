@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfb_predictor"
+version = "0.1.0"
+description = "College football (FBS) game outcome and player prop predictor"
+requires-python = ">=3.10"
+dependencies = [
+    "cfbd>=5.0.0",
+    "pandas",
+    "numpy",
+    "scipy",
+    "xgboost",
+    "scikit-learn",
+    "requests",
+    "python-dotenv",
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-mock", "httpx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
