@@ -19,7 +19,7 @@ def _raw_player_game_stats():
             "id": 401520145,
             "teams": [
                 {
-                    "school": "Ohio State",
+                    "team": "Ohio State",
                     "categories": [
                         {
                             "name": "passing",
@@ -53,7 +53,7 @@ def test_fetch_weekly_player_stats_caches_per_season(monkeypatch, tmp_path):
     monkeypatch.setattr(player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
     calls = []
 
-    def fake_import(season):
+    def fake_import(season, weeks):
         calls.append(season)
         return _raw_player_game_stats()
 
@@ -69,7 +69,7 @@ def test_fetch_weekly_player_stats_caches_per_season(monkeypatch, tmp_path):
 
 def test_flattened_stats_attach_week_from_games_df(monkeypatch, tmp_path):
     monkeypatch.setattr(player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
-    monkeypatch.setattr(player_stats, "_import_player_game_stats", lambda season: _raw_player_game_stats())
+    monkeypatch.setattr(player_stats, "_import_player_game_stats", lambda season, weeks: _raw_player_game_stats())
 
     df = player_stats.fetch_weekly_player_stats([2025], _games_df())
 
@@ -79,7 +79,7 @@ def test_flattened_stats_attach_week_from_games_df(monkeypatch, tmp_path):
 
 def test_flattened_stats_map_category_type_pairs_to_flat_columns(monkeypatch, tmp_path):
     monkeypatch.setattr(player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
-    monkeypatch.setattr(player_stats, "_import_player_game_stats", lambda season: _raw_player_game_stats())
+    monkeypatch.setattr(player_stats, "_import_player_game_stats", lambda season, weeks: _raw_player_game_stats())
 
     df = player_stats.fetch_weekly_player_stats([2025], _games_df())
 
@@ -103,7 +103,7 @@ def test_targets_column_is_always_present_but_nan(monkeypatch, tmp_path):
     # CFBD's box score does not track targets -- the column must still exist
     # (features/player_usage.py's ROLL_STATS references it) but stays NaN.
     monkeypatch.setattr(player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
-    monkeypatch.setattr(player_stats, "_import_player_game_stats", lambda season: _raw_player_game_stats())
+    monkeypatch.setattr(player_stats, "_import_player_game_stats", lambda season, weeks: _raw_player_game_stats())
 
     df = player_stats.fetch_weekly_player_stats([2025], _games_df())
 
