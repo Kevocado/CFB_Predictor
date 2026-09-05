@@ -47,13 +47,40 @@ def _import_games(season: int) -> pd.DataFrame:
     """One call per season — cfbd.GamesApi.get_games(year=season) returns
     every week of that season's games in a single response, so this never
     needs a per-week loop. Thin wrapper so tests can monkeypatch just this
-    one function rather than the whole cfbd client."""
+    one function rather than the whole cfbd client.
+
+    classification="fbs" filters server-side to games with at least one FBS
+    team (confirmed against real data in Task 17: without it, get_games
+    returns every division's games -- FCS/II/III included -- which flooded
+    /api/games' weekly slate with non-FBS matchups this project's spec
+    scopes out entirely. FBS-vs-FCS "buy games" still come through, which is
+    correct for a real schedule display; features/build.py's own FCS
+    exclusion (via fbs_teams/home_division/away_division) still separately
+    keeps those out of *training* rows).
+
+    Retries on transient CFBD-origin 5xx errors (observed 503s and 502s
+    from CFBD's Cloudflare front end during Task 17's real run) with a
+    short backoff, matching the same resilience data/player_stats.py's
+    _import_player_game_stats already needed for the exact same problem."""
+    import time
+
     import cfbd
 
     with cfbd.ApiClient(_cfbd_configuration()) as api_client:
         games_api = cfbd.GamesApi(api_client)
-        fetched = games_api.get_games(year=season)
-    return pd.DataFrame([g.to_dict() for g in fetched])
+        for attempt in range(5):
+            try:
+                fetched = games_api.get_games(year=season, classification="fbs")
+                break
+            except cfbd.exceptions.ServiceException:
+                if attempt == 4:
+                    raise
+                time.sleep(3 * (2**attempt))
+    # NOTE: Game.to_dict() serializes with by_alias=True (CFBD's camelCase
+    # wire format, e.g. "homeTeam"), which does not match KEEP_COLUMNS'
+    # snake_case names below. .dict() uses the model's actual (snake_case)
+    # field names instead. Confirmed against real CFBD data in Task 17.
+    return pd.DataFrame([g.dict() for g in fetched])
 
 
 def _import_fbs_teams(season: int) -> pd.DataFrame:
@@ -85,12 +112,19 @@ def _normalize_games(raw: pd.DataFrame) -> pd.DataFrame:
             "start_date": "gameday",
             "home_points": "home_score",
             "away_points": "away_score",
+            # Real CFBD Game model field is home_classification/
+            # away_classification (an enum), not home_division/
+            # away_division — confirmed against real data in Task 17.
+            "home_classification": "home_division",
+            "away_classification": "away_division",
         }
     )
     for col in KEEP_COLUMNS:
         if col not in df.columns:
             df[col] = None
     df = df[KEEP_COLUMNS].copy()
+    for col in ("home_division", "away_division"):
+        df[col] = df[col].map(lambda v: getattr(v, "value", v))
     df["gameday"] = pd.to_datetime(df["gameday"])
     df["game_id"] = df["game_id"].astype(str)
     return df
