@@ -25,7 +25,6 @@ jobs:
           password: ${{ secrets.GHCR_PAT }}
 
       - name: Build and push CFB Predictor image
-        working-directory: CFB_Predictor
         run: |
           docker build -t ghcr.io/kevocado/cfb-predictor:${{ github.sha }} -t ghcr.io/kevocado/cfb-predictor:latest .
           docker push ghcr.io/kevocado/cfb-predictor:${{ github.sha }}
