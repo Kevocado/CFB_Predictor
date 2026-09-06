@@ -1,0 +1,52 @@
+{
+  "trained_at": "2026-09-05T19:08:40.988453+00:00",
+  "seasons": [
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "n_train": 6024,
+  "feature_cols": [
+    "home_pregame_rating",
+    "away_pregame_rating",
+    "rating_diff",
+    "home_points_scored_roll",
+    "home_points_allowed_roll",
+    "away_points_scored_roll",
+    "away_points_allowed_roll",
+    "home_rest_days",
+    "away_rest_days",
+    "conference_game"
+  ],
+  "player_feature_cols": [
+    "passing_yards_roll",
+    "rushing_yards_roll",
+    "receiving_yards_roll",
+    "targets_roll",
+    "carries_roll"
+  ],
+  "chosen_candidate": "ridge",
+  "candidate_scores": {
+    "elo": 0.5950373215005739,
+    "ridge": 0.5656341110573744,
+    "xgb": 0.5723095674917473
+  },
+  "sigma": 16.98585958519707,
+  "total_sigma": 15.998238941965075,
+  "yardage_metrics": {
+    "passing_yards": {
+      "n_train": 25346
+    },
+    "rushing_yards": {
+      "n_train": 80797
+    },
+    "receiving_yards": {
+      "n_train": 122724
+    }
+  }
+}
