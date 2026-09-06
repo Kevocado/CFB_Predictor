@@ -219,7 +219,13 @@ def get_player_props(season: int, week: int):
         if feature_row is None:
             continue
         props = player_props.predict_props(models["player_models"], feature_row, position=player["position"])
-        results.append({"player_id": player["player_id"], "player_name": player["player_name"], **props})
+        results.append({
+            "player_id": player["player_id"],
+            "player_name": player["player_name"],
+            "recent_team": player["recent_team"],
+            "position": player["position"],
+            **props,
+        })
     return results
 
 

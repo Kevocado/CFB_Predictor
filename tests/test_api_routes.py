@@ -170,3 +170,27 @@ def test_lines_for_game_refuses_to_guess_between_ambiguous_prefix_matches():
 
     assert spread_line is None
     assert total_line is None
+
+def test_get_player_props_includes_recent_team_and_position(client, monkeypatch):
+    monkeypatch.setattr(
+        routes, "_load_player_history",
+        lambda season: pd.DataFrame(
+            [{"player_id": "cfb-001", "player_name": "Quinn Ewers", "position": "QB",
+              "recent_team": "Texas", "season": season}]
+        ),
+    )
+    monkeypatch.setattr(
+        routes.player_usage, "build_features_for_player",
+        lambda player_id, history: pd.Series({"dummy_feature": 1.0}),
+    )
+    monkeypatch.setattr(
+        routes.player_props, "predict_props",
+        lambda player_models, feature_row, position: {"anytime_td_prob": 0.37, "passing_yards": 260.0},
+    )
+
+    response = client.get("/api/players/2025/1/props")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["recent_team"] == "Texas"
+    assert body[0]["position"] == "QB"
