@@ -57,3 +57,4 @@ jobs:
             --image ghcr.io/kevocado/cfb-predictor:${{ github.sha }} \
             --min-replicas 0 \
             --max-replicas 3 || true
+          az containerapp ingress enable --name cfb-predictor --resource-group predictor-hub-rg --type external --target-port 8003 || true
