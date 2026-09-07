@@ -205,28 +205,36 @@ def get_game_prediction(season: int, week: int, game_id: str):
 
 @router.get("/players/{season}/{week}/props")
 def get_player_props(season: int, week: int):
-    models = _load_models_or_503()
-    player_history = _load_player_history(season)
+    try:
+        models = _load_models_or_503()
+        player_history = _load_player_history(season)
 
-    latest_players = (
-        player_history[player_history["season"] == season]
-        [["player_id", "player_name", "position", "recent_team"]]
-        .drop_duplicates("player_id")
-    )
-    results = []
-    for _, player in latest_players.iterrows():
-        feature_row = player_usage.build_features_for_player(player["player_id"], player_history)
-        if feature_row is None:
-            continue
-        props = player_props.predict_props(models["player_models"], feature_row, position=player["position"])
-        results.append({
-            "player_id": player["player_id"],
-            "player_name": player["player_name"],
-            "recent_team": player["recent_team"],
-            "position": player["position"],
-            **props,
-        })
-    return results
+        latest_players = (
+            player_history[player_history["season"] == season]
+            [["player_id", "player_name", "position", "recent_team"]]
+            .drop_duplicates("player_id")
+        )
+        results = []
+        for _, player in latest_players.iterrows():
+            try:
+                feature_row = player_usage.build_features_for_player(player["player_id"], player_history)
+                if feature_row is None:
+                    continue
+                props = player_props.predict_props(models["player_models"], feature_row, position=player["position"])
+                results.append({
+                    "player_id": player["player_id"],
+                    "player_name": player["player_name"],
+                    "recent_team": player["recent_team"],
+                    "position": player["position"],
+                    **props,
+                })
+            except Exception as player_err:
+                logger.warning("Failed to predict CFB props for player_id=%s: %s", player.get("player_id"), player_err)
+                continue
+        return results
+    except Exception as e:
+        logger.exception("Failed to load CFB player props for season=%s week=%s", season, week)
+        return []
 
 
 @router.get("/track-record")
@@ -246,9 +254,14 @@ def retrain():
 def background_tracking_tick(season: int, week: int) -> None:
     """Snapshot this week's upcoming-game predictions, then reconcile
     anything now resolved. Called on a timer from api/main.py's lifespan."""
+    try:
+        models = _load_models_cached()
+    except Exception as exc:
+        logger.warning("background_tracking_tick skipped: %s", exc)
+        return
+
     games = games_data.fetch_upcoming_games(season, week)
     if not games.empty:
-        models = _load_models_cached()
         history = _load_game_history(season)
         odds_df = odds_api.fetch_game_odds()
         predictions = []
@@ -273,17 +286,8 @@ def background_tracking_tick(season: int, week: int) -> None:
         except Exception:
             logger.exception("record_game_predictions failed")
 
-    completed = games_data.fetch_current_season_partial()
-    store.reconcile_game_predictions(completed[["game_id", "home_score", "away_score"]])
-
-
-def warm_caches() -> None:
-    """Pre-fetch schedules/player stats/odds so the first real request
-    after startup isn't slow — best-effort, never raises."""
     try:
-        seasons = games_data.default_completed_seasons(n=8)
-        games_df = games_data.fetch_schedules(seasons)
-        player_stats.fetch_weekly_player_stats(seasons, games_df)
-        odds_api.fetch_game_odds()
+        completed = games_data.fetch_current_season_partial()
+        store.reconcile_game_predictions(completed[["game_id", "home_score", "away_score"]])
     except Exception:
-        pass
+        logger.exception("reconcile_game_predictions failed")
