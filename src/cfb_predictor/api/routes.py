@@ -208,12 +208,35 @@ def get_player_props(season: int, week: int):
     try:
         models = _load_models_or_503()
         player_history = _load_player_history(season)
+        upcoming_games = games_data.fetch_upcoming_games(season, week)
+
+        if upcoming_games.empty:
+            return []
+
+        home_teams = set(upcoming_games["home_team"].str.lower())
+        away_teams = set(upcoming_games["away_team"].str.lower())
+
+        # Loose substring matching so short names match full school names
+        def is_playing(team_name):
+            if not isinstance(team_name, str):
+                return False
+            t = team_name.lower()
+            return any(h in t or t in h for h in home_teams.union(away_teams))
+
+        # Handle Week 1 / early season where current season stats don't exist yet
+        available_seasons = player_history["season"].unique()
+        target_season = season if season in available_seasons and not player_history[player_history["season"] == season].empty else player_history["season"].max()
+
+        relevant_players = player_history[
+            (player_history["season"] == target_season) & 
+            (player_history["recent_team"].apply(is_playing))
+        ]
 
         latest_players = (
-            player_history[player_history["season"] == season]
-            [["player_id", "player_name", "position", "recent_team"]]
+            relevant_players[["player_id", "player_name", "position", "recent_team"]]
             .drop_duplicates("player_id")
         )
+
         results = []
         for _, player in latest_players.iterrows():
             try:
@@ -235,7 +258,6 @@ def get_player_props(season: int, week: int):
     except Exception as e:
         logger.exception("Failed to load CFB player props for season=%s week=%s", season, week)
         return []
-
 
 @router.get("/track-record")
 def get_track_record():

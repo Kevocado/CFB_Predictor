@@ -21,9 +21,11 @@ supplied.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pandas as pd
+import cfbd
 
 from ..config import CFBD_API_KEY, CURRENT_SEASON, GAMES_CACHE_DIR, TEAMS_CACHE_DIR
 
@@ -45,12 +47,9 @@ TEAM_KEEP_COLUMNS = ["team", "conference", "division", "classification"]
 
 
 def _cfbd_configuration():
-    """Isolated in its own function so a mismatch between this plan's
-    assumed cfbd package shape and the installed version (see this plan's
-    "Implementation notes" section) is a one-line fix, not a scattered one."""
-    import cfbd
-
-    return cfbd.Configuration(access_token=CFBD_API_KEY)
+    """Configures the CFBD client configuration object."""
+    config = cfbd.Configuration()
+    return config
 
 
 def _import_games(season: int) -> pd.DataFrame:
@@ -72,11 +71,15 @@ def _import_games(season: int) -> pd.DataFrame:
     from CFBD's Cloudflare front end during Task 17's real run) with a
     short backoff, matching the same resilience data/player_stats.py's
     _import_player_game_stats already needed for the exact same problem."""
-    import time
-
-    import cfbd
-
+    
     with cfbd.ApiClient(_cfbd_configuration()) as api_client:
+        # Directly inject Authorization header to bypass OpenAPI client key-mapping bugs
+        key = os.getenv("CFBD_API_KEY", "").strip()
+        if key:
+            if not key.startswith("Bearer "):
+                key = f"Bearer {key}"
+            api_client.default_headers['Authorization'] = key
+
         games_api = cfbd.GamesApi(api_client)
         for attempt in range(5):
             try:
@@ -99,9 +102,15 @@ def _import_fbs_teams(season: int) -> pd.DataFrame:
     occasionally divisions) year to year, so hardcoding a list would go
     stale; this is the "one additional data-module function" the design
     spec calls for rather than a separate task."""
-    import cfbd
-
+    
     with cfbd.ApiClient(_cfbd_configuration()) as api_client:
+        # Directly inject Authorization header here as well
+        key = os.getenv("CFBD_API_KEY", "").strip()
+        if key:
+            if not key.startswith("Bearer "):
+                key = f"Bearer {key}"
+            api_client.default_headers['Authorization'] = key
+
         teams_api = cfbd.TeamsApi(api_client)
         fetched = teams_api.get_fbs_teams(year=season)
     return pd.DataFrame([t.to_dict() for t in fetched])
