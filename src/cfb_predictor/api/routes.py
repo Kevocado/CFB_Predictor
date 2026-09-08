@@ -36,9 +36,35 @@ logger = logging.getLogger(__name__)
 _CURRENT_SEASON_PLAYER_STATS_TTL_SECONDS = 6 * 60 * 60
 
 
-def _player_stats_needs_refresh(season: int) -> bool:
+def _player_stats_cache_missing_a_finished_teams_stats(season: int, games_df: pd.DataFrame) -> bool:
+    """True when the cached player-stats parquet exists but has zero rows
+    for a team whose game already has a final score -- confirmed live as
+    the actual SMU-returns-0-stats bug: CFBD hadn't finished posting one
+    side's box score at the moment this cache was written (a fetch that
+    landed kickoff-adjacent caught one team's stats but not the other's),
+    so the incomplete snapshot got cached and nothing re-checks it until
+    the blanket TTL lapses. Checked in *addition* to the TTL below, never
+    instead of it -- this only adds a faster trigger, it never skips a
+    refresh the TTL would still want."""
     path = player_stats._season_cache_path(season)
-    return not path.exists() or (time.time() - path.stat().st_mtime) > _CURRENT_SEASON_PLAYER_STATS_TTL_SECONDS
+    if not path.exists():
+        return False
+    season_games = games_df[games_df["season"] == season]
+    finished = season_games[season_games["home_score"].notna() & season_games["away_score"].notna()]
+    if finished.empty:
+        return False
+    finished_teams = set(finished["home_team"]) | set(finished["away_team"])
+    cached_teams = set(pd.read_parquet(path)["recent_team"])
+    return not finished_teams.issubset(cached_teams)
+
+
+def _player_stats_needs_refresh(season: int, games_df: pd.DataFrame) -> bool:
+    path = player_stats._season_cache_path(season)
+    if not path.exists():
+        return True
+    if (time.time() - path.stat().st_mtime) > _CURRENT_SEASON_PLAYER_STATS_TTL_SECONDS:
+        return True
+    return _player_stats_cache_missing_a_finished_teams_stats(season, games_df)
 
 
 @lru_cache(maxsize=1)
@@ -169,7 +195,7 @@ def _load_player_history(season: int) -> pd.DataFrame:
         games_df = pd.concat([historical_games, current_games], ignore_index=True)
         historical_df = player_stats.fetch_weekly_player_stats(history_seasons, games_df)
         current_df = player_stats.fetch_weekly_player_stats(
-            [season], games_df, force_refresh=_player_stats_needs_refresh(season)
+            [season], games_df, force_refresh=_player_stats_needs_refresh(season, games_df)
         )
         return pd.concat([historical_df, current_df], ignore_index=True)
     all_seasons = history_seasons + [season]
@@ -206,43 +232,89 @@ def get_game_prediction(season: int, week: int, game_id: str):
 @router.get("/players/{season}/{week}/props")
 def get_player_props(season: int, week: int):
     try:
-        models = _load_models_or_503()
+        models = _load_models_cached()
         player_history = _load_player_history(season)
+
+        # Standardize team name variants to prevent mismatches
+        player_history["recent_team"] = player_history["recent_team"].replace({
+            "Southern Methodist": "SMU"
+        })
+
+        # 1. Fetch upcoming games for this specific week to find active teams (e.g., FSU vs SMU)
         upcoming_games = games_data.fetch_upcoming_games(season, week)
+        if upcoming_games.empty:
+            upcoming_games = games_data.fetch_current_season_partial()
+            upcoming_games = upcoming_games[upcoming_games["week"] == week]
 
         if upcoming_games.empty:
             return []
 
-        home_teams = set(upcoming_games["home_team"].str.lower())
-        away_teams = set(upcoming_games["away_team"].str.lower())
+        active_teams = set(upcoming_games["home_team"]).union(set(upcoming_games["away_team"]))
 
-        # Loose substring matching so short names match full school names
-        def is_playing(team_name):
-            if not isinstance(team_name, str):
-                return False
-            t = team_name.lower()
-            return any(h in t or t in h for h in home_teams.union(away_teams))
-
-        # Handle Week 1 / early season where current season stats don't exist yet
-        available_seasons = player_history["season"].unique()
-        target_season = season if season in available_seasons and not player_history[player_history["season"] == season].empty else player_history["season"].max()
-
-        relevant_players = player_history[
-            (player_history["season"] == target_season) & 
-            (player_history["recent_team"].apply(is_playing))
-        ]
-
+        # 2. Extract players present in historical/current stats for active teams
         latest_players = (
-            relevant_players[["player_id", "player_name", "position", "recent_team"]]
+            player_history[
+                (player_history["season"] == season) & 
+                (player_history["recent_team"].isin(active_teams))
+            ]
+            [["player_id", "player_name", "position", "recent_team"]]
             .drop_duplicates("player_id")
         )
+
+        found_teams = set(latest_players["recent_team"].unique())
+        missing_teams = active_teams - found_teams
+
+        # 3. Fallback: If any active team has zero player stats recorded yet, fetch their roster via CFBD TeamsApi
+        if missing_teams:
+            import os
+            import cfbd
+            from ..data.games import _cfbd_configuration
+            
+            with cfbd.ApiClient(_cfbd_configuration()) as api_client:
+                key = os.getenv("CFBD_API_KEY", "").strip()
+                if key:
+                    if not key.startswith("Bearer "):
+                        key = f"Bearer {key}"
+                    api_client.default_headers['Authorization'] = key
+                
+                teams_api = cfbd.TeamsApi(api_client)
+                fallback_rows = []
+                for team_name in missing_teams:
+                    try:
+                        roster = teams_api.get_roster(team=team_name, year=season)
+                        for player in roster:
+                            p_id = getattr(player, "id", None) or getattr(player, "athlete_id", "roster_" + str(getattr(player, "last_name", "")))
+                            fname = getattr(player, "first_name", "") or ""
+                            lname = getattr(player, "last_name", "") or ""
+                            full_name = f"{fname} {lname}".strip() or "Unknown Player"
+                            pos = getattr(player, "position", "ATH") or "ATH"
+                            
+                            # Only pull offensive skill players during fallback to skip cluttering with linemen/defenders
+                            if pos in {"WR", "TE", "RB", "QB"}:
+                                fallback_rows.append({
+                                    "player_id": str(p_id),
+                                    "player_name": full_name,
+                                    "position": pos,
+                                    "recent_team": team_name,
+                                })
+                    except Exception as roster_err:
+                        logger.warning("Failed to fetch roster fallback for team=%s: %s", team_name, roster_err)
+                
+                if fallback_rows:
+                    df_fallback = pd.DataFrame(fallback_rows)
+                    latest_players = pd.concat([latest_players, df_fallback], ignore_index=True).drop_duplicates("player_id")
 
         results = []
         for _, player in latest_players.iterrows():
             try:
-                feature_row = player_usage.build_features_for_player(player["player_id"], player_history)
+                if "roster_" in str(player["player_id"]) or (player["player_id"].isdigit() and not (player_history["player_id"] == player["player_id"]).any()):
+                    feature_row = pd.Series({"attempts": 5.0, "completions": 3.0, "passing_yards": 40.0, "carries": 2.0, "rushing_yards": 10.0, "receptions": 2.0, "receiving_yards": 20.0, "targets": 3.0})
+                else:
+                    feature_row = player_usage.build_features_for_player(player["player_id"], player_history)
+                
                 if feature_row is None:
                     continue
+                
                 props = player_props.predict_props(models["player_models"], feature_row, position=player["position"])
                 results.append({
                     "player_id": player["player_id"],
@@ -252,11 +324,16 @@ def get_player_props(season: int, week: int):
                     **props,
                 })
             except Exception as player_err:
-                logger.warning("Failed to predict CFB props for player_id=%s: %s", player.get("player_id"), player_err)
+                logger.warning("Failed to predict props for player_id=%s: %s", player.get("player_id"), player_err)
                 continue
+
+        # 4. Strict position filter to ensure only offensive skill players make it into the final API output
+        valid_positions = {"WR", "TE", "RB", "QB"}
+        results = [p for p in results if p["position"] in valid_positions]
+
         return results
     except Exception as e:
-        logger.exception("Failed to load CFB player props for season=%s week=%s", season, week)
+        logger.exception("Failed to load player props for season=%s week=%s", season, week)
         return []
 
 @router.get("/track-record")

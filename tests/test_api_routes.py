@@ -194,3 +194,51 @@ def test_get_player_props_includes_recent_team_and_position(client, monkeypatch)
     body = response.json()
     assert body[0]["recent_team"] == "Texas"
     assert body[0]["position"] == "QB"
+
+
+def _games_df_with_final_scores(season=2026):
+    return pd.DataFrame([
+        {"season": season, "home_team": "Florida State", "away_team": "SMU", "home_score": 24, "away_score": 27},
+    ])
+
+
+def test_player_stats_needs_refresh_when_cache_missing_a_finished_teams_stats(monkeypatch, tmp_path):
+    """The SMU class of bug: the cache was written before CFBD finished
+    posting one side's box score, so it has rows for Florida State but none
+    for SMU even though SMU's game already has a final score. This must
+    force a refresh regardless of how fresh the cache file's mtime is."""
+    monkeypatch.setattr(routes.player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
+    path = routes.player_stats._season_cache_path(2026)
+    pd.DataFrame([{"recent_team": "Florida State", "season": 2026, "week": 1}]).to_parquet(path)
+
+    assert routes._player_stats_needs_refresh(2026, _games_df_with_final_scores()) is True
+
+
+def test_player_stats_does_not_need_refresh_when_cache_has_every_finished_teams_stats(monkeypatch, tmp_path):
+    monkeypatch.setattr(routes.player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
+    path = routes.player_stats._season_cache_path(2026)
+    pd.DataFrame([
+        {"recent_team": "Florida State", "season": 2026, "week": 1},
+        {"recent_team": "SMU", "season": 2026, "week": 1},
+    ]).to_parquet(path)
+
+    assert routes._player_stats_needs_refresh(2026, _games_df_with_final_scores()) is False
+
+
+def test_player_stats_refresh_check_ignores_games_with_no_final_score_yet(monkeypatch, tmp_path):
+    """A team with no rows in the cache is expected and fine as long as
+    their game hasn't finished yet -- only a *finished* game missing stats
+    is the stale-cache signal."""
+    monkeypatch.setattr(routes.player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
+    path = routes.player_stats._season_cache_path(2026)
+    pd.DataFrame([{"recent_team": "Texas", "season": 2026, "week": 1}]).to_parquet(path)
+    upcoming_game = pd.DataFrame([
+        {"season": 2026, "home_team": "Texas", "away_team": "Oklahoma", "home_score": None, "away_score": None},
+    ])
+
+    assert routes._player_stats_needs_refresh(2026, upcoming_game) is False
+
+
+def test_player_stats_needs_refresh_when_no_cache_exists_yet(monkeypatch, tmp_path):
+    monkeypatch.setattr(routes.player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
+    assert routes._player_stats_needs_refresh(2026, _games_df_with_final_scores()) is True
