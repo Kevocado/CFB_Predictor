@@ -376,6 +376,7 @@ def background_tracking_tick(season: int, week: int) -> None:
                         "game_id": game["game_id"], "home_team": game["home_team"], "away_team": game["away_team"],
                         "commence_time": str(game["gameday"]),
                         "home_spread_line": spread_line, "total_line": total_line,
+                        "season": season,
                         **pred,
                     }
                 )
@@ -392,3 +393,8 @@ def background_tracking_tick(season: int, week: int) -> None:
         store.reconcile_game_predictions(completed[["game_id", "home_score", "away_score"]])
     except Exception:
         logger.exception("reconcile_game_predictions failed")
+
+    try:
+        store.backfill_unresolved_games(games_data)
+    except Exception:
+        logger.exception("backfill_unresolved_games failed")

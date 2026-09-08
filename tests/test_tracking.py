@@ -22,6 +22,7 @@ def _future_game(**overrides):
         "home_cover_prob": 0.55, "away_cover_prob": 0.45,
         "over_prob": 0.5, "under_prob": 0.5,
         "home_spread_line": -3.5, "total_line": 51.5,
+        "season": 2025,
     }
     game.update(overrides)
     return game
@@ -69,3 +70,31 @@ def test_reconcile_leaves_ats_and_total_hit_null_when_lines_were_never_recorded(
     assert row["moneyline_hit"] == 1
     assert pd.isna(row["ats_hit"])
     assert pd.isna(row["total_hit"])
+
+
+def test_reconcile_catches_a_game_missed_by_a_prior_tick():
+    """Simulates a deploy/restart: the game was snapshotted, its results
+    became available, but no tick ran to reconcile it until now."""
+    store.record_game_predictions([_future_game(game_id="g1", commence_time="2099-01-01T00:00:00Z")])
+    results = pd.DataFrame([{"game_id": "g1", "home_score": 21, "away_score": 14}])
+
+    resolved = store.reconcile_game_predictions(results)
+
+    assert resolved == 1
+
+
+def test_backfill_catches_a_prior_season_row_current_season_partial_would_miss(monkeypatch):
+    # commence_time must still be pre-kickoff for the snapshot to be recorded
+    # at all (record_game_predictions silently drops already-kicked-off games);
+    # `season` is what marks this as a prior-season row current_season_partial
+    # would never look at again.
+    store.record_game_predictions([_future_game(game_id="g_old", season=2024, commence_time="2099-01-01T00:00:00Z")])
+    from cfb_predictor.data import games as games_data
+    monkeypatch.setattr(
+        games_data, "load_training_data",
+        lambda seasons: pd.DataFrame([{"game_id": "g_old", "home_score": 10, "away_score": 24}]),
+    )
+
+    resolved = store.backfill_unresolved_games(games_data)
+
+    assert resolved == 1

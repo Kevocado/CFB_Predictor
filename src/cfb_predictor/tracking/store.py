@@ -51,7 +51,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(game_predictions)")}
-    for column in ("home_spread_line", "total_line", "ats_hit", "total_hit"):
+    for column in ("home_spread_line", "total_line", "ats_hit", "total_hit", "season"):
         if column not in existing_cols:
             conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} REAL" if column in ("home_spread_line", "total_line")
                          else f"ALTER TABLE game_predictions ADD COLUMN {column} INTEGER")
@@ -105,7 +105,7 @@ def record_game_predictions(games: list[dict]) -> int:
             float(game["home_win_prob"]), float(game["away_win_prob"]),
             game.get("home_cover_prob"), game.get("away_cover_prob"),
             game.get("over_prob"), game.get("under_prob"),
-            game.get("home_spread_line"), game.get("total_line"),
+            game.get("home_spread_line"), game.get("total_line"), game.get("season"),
         )
         for game in valid_games
     ]
@@ -115,8 +115,8 @@ def record_game_predictions(games: list[dict]) -> int:
             INSERT OR IGNORE INTO game_predictions
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
                  home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
-                 home_spread_line, total_line)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 home_spread_line, total_line, season)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -163,6 +163,24 @@ def reconcile_game_predictions(results_df: pd.DataFrame) -> int:
             )
             resolved_count += cursor.rowcount
         return resolved_count
+
+
+def backfill_unresolved_games(games_data_module) -> int:
+    """Targeted backfill: reconciles any still-unresolved snapshot whose
+    season isn't CURRENT_SEASON, which the normal tick's
+    fetch_current_season_partial() never looks at again. Takes the
+    games_data module (not a season list) so it can look up whichever
+    season each unresolved row actually belongs to."""
+    with contextlib.closing(_connect()) as conn:
+        unresolved = pd.read_sql("SELECT season FROM game_predictions WHERE resolved = 0", conn)
+    if unresolved.empty:
+        return 0
+
+    seasons = sorted({int(s) for s in unresolved["season"].dropna()} | {pd.Timestamp.now().year})
+    finished = games_data_module.load_training_data(seasons=seasons)
+    if finished.empty:
+        return 0
+    return reconcile_game_predictions(finished[["game_id", "home_score", "away_score"]])
 
 
 def get_track_record() -> dict:
