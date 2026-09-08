@@ -284,3 +284,31 @@ def reconcile_player_prop_predictions(player_stats_df: pd.DataFrame) -> int:
             )
             resolved_count += cursor.rowcount
         return resolved_count
+
+
+def get_predictions_for_week(season: int, week: int, games_df: pd.DataFrame) -> list[dict]:
+    if games_df.empty:
+        return []
+    game_ids = tuple(games_df["game_id"])
+    placeholders = ",".join("?" * len(game_ids))
+    with contextlib.closing(_connect()) as conn:
+        tracked = pd.read_sql(
+            f"SELECT * FROM game_predictions WHERE game_id IN ({placeholders})", conn, params=game_ids
+        )
+    tracked_by_id = {row["game_id"]: row for _, row in tracked.iterrows()}
+
+    results = []
+    for _, game in games_df.iterrows():
+        row = tracked_by_id.get(game["game_id"])
+        if row is None:
+            results.append({"game_id": game["game_id"], "status": "untracked", "verdict": None})
+            continue
+        resolved = bool(row["resolved"])
+        results.append({
+            "game_id": game["game_id"],
+            "status": "resolved" if resolved else "pending",
+            "home_win_prob": row["home_win_prob"],
+            "away_win_prob": row["away_win_prob"],
+            "verdict": get_game_verdict(game["game_id"]) if resolved else None,
+        })
+    return results

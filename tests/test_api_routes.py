@@ -250,3 +250,20 @@ def test_player_stats_refresh_check_ignores_games_with_no_final_score_yet(monkey
 def test_player_stats_needs_refresh_when_no_cache_exists_yet(monkeypatch, tmp_path):
     monkeypatch.setattr(routes.player_stats, "PLAYER_STATS_CACHE_DIR", tmp_path)
     assert routes._player_stats_needs_refresh(2026, _games_df_with_final_scores()) is True
+
+
+def test_get_predictions_for_week_returns_list_of_predictions(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.store, "get_predictions_for_week",
+        lambda season, week, games: [
+            {"game_id": "401520145", "status": "pending", "home_win_prob": 0.4, "away_win_prob": 0.6, "verdict": None},
+        ]
+    )
+
+    response = client.get("/api/predictions/2025/1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["game_id"] == "401520145"
+    assert body[0]["status"] == "pending"

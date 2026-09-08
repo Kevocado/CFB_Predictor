@@ -349,6 +349,15 @@ def get_game_verdict(game_id: str):
     return verdict
 
 
+@router.get("/predictions/{season}/{week}")
+def get_predictions_for_week(season: int, week: int):
+    games = games_data.fetch_upcoming_games(season, week)
+    if games.empty:
+        games = games_data.load_training_data(seasons=[season])
+        games = games[games["week"] == week]
+    return store.get_predictions_for_week(season, week, games)
+
+
 @router.post("/retrain")
 def retrain():
     if PUBLIC_MODE:
