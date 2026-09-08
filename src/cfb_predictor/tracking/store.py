@@ -141,7 +141,7 @@ def reconcile_game_predictions(results_df: pd.DataFrame) -> int:
             ats_hit = None
             if pd.notna(row.get("home_spread_line")):
                 home_margin = row["home_score"] - row["away_score"]
-                home_covered = (home_margin + row["home_spread_line"]) > 0
+                home_covered = home_margin > row["home_spread_line"]
                 predicted_home_cover = (row.get("home_cover_prob") or 0) >= (row.get("away_cover_prob") or 0)
                 ats_hit = int(predicted_home_cover == home_covered)
 

@@ -134,7 +134,12 @@ def _lines_for_game(odds_df: pd.DataFrame, home_team: str, away_team: str) -> tu
         & matches["outcome_name"].map(lambda t: _team_name_matches(home_team, t))
     ]
     if not spread_rows.empty:
-        spread_line = float(spread_rows.iloc[0]["point"])
+        # The Odds API's `point` is the raw handicap (negative when the home
+        # team is favored). Negate it so spread_line means "home expected
+        # margin" -- the same convention nflverse uses and that
+        # game_outcome.margin_to_probabilities documents and is pinned
+        # against (see this plan's final review, finding B2).
+        spread_line = -float(spread_rows.iloc[0]["point"])
 
     total_line = None
     total_rows = matches[(matches["market"] == "totals") & (matches["outcome_name"] == "Over")]
@@ -351,10 +356,14 @@ def get_game_verdict(game_id: str):
 
 @router.get("/predictions/{season}/{week}")
 def get_predictions_for_week(season: int, week: int):
-    games = games_data.fetch_upcoming_games(season, week)
-    if games.empty:
-        games = games_data.load_training_data(seasons=[season])
-        games = games[games["week"] == week]
+    # A union, not an if/else fallback: a week in progress has both
+    # already-final games and still-upcoming ones, and the old if/else
+    # dropped every finished game (and its verdict) whenever any game in
+    # the week was still unplayed (see this plan's final review, finding B3).
+    upcoming = games_data.fetch_upcoming_games(season, week)
+    finished = games_data.load_training_data(seasons=[season])
+    finished = finished[finished["week"] == week]
+    games = pd.concat([finished, upcoming], ignore_index=True).drop_duplicates(subset="game_id")
     return store.get_predictions_for_week(season, week, games)
 
 

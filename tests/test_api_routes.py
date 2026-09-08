@@ -108,7 +108,10 @@ def test_lines_for_game_reads_spreads_and_totals_from_odds_api():
 
     spread_line, total_line = routes._lines_for_game(odds_df, "Texas", "Ohio State")
 
-    assert spread_line == -3.5
+    # The Odds API's raw point is -3.5 (home favored); _lines_for_game
+    # negates it so spread_line means "home expected margin" (home
+    # favored by 3.5), matching game_outcome's documented convention.
+    assert spread_line == 3.5
     assert total_line == 51.5
 
 
@@ -135,7 +138,7 @@ def test_lines_for_game_matches_cfbd_school_name_to_odds_api_full_name():
 
     spread_line, total_line = routes._lines_for_game(odds_df, "Texas", "Ohio State")
 
-    assert spread_line == -3.5
+    assert spread_line == 3.5
     assert total_line == 51.5
 
 
@@ -267,3 +270,33 @@ def test_get_predictions_for_week_returns_list_of_predictions(client, monkeypatc
     assert len(body) == 1
     assert body[0]["game_id"] == "401520145"
     assert body[0]["status"] == "pending"
+
+
+def test_get_predictions_for_week_includes_both_resolved_and_pending_games(client, monkeypatch):
+    """A week in progress has both finished games (from load_training_data)
+    and still-upcoming ones (from fetch_upcoming_games). The old if/else
+    fallback dropped the finished game whenever any game that week was
+    still unplayed (see this plan's final review, finding B3); the route
+    must union both sources instead. The client fixture's default mocks
+    already return one pending game ("401520145", week=1) from
+    fetch_upcoming_games and one finished game ("g0", week=1) from
+    load_training_data."""
+    captured = {}
+
+    def fake_get_predictions_for_week(season, week, games):
+        captured["game_ids"] = set(games["game_id"])
+        return [
+            {"game_id": gid, "status": "resolved" if gid == "g0" else "pending", "verdict": None}
+            for gid in games["game_id"]
+        ]
+
+    monkeypatch.setattr(routes.store, "get_predictions_for_week", fake_get_predictions_for_week)
+
+    response = client.get("/api/predictions/2025/1")
+
+    assert response.status_code == 200
+    assert captured["game_ids"] == {"401520145", "g0"}
+    body = response.json()
+    statuses = {row["game_id"]: row["status"] for row in body}
+    assert statuses["401520145"] == "pending"
+    assert statuses["g0"] == "resolved"
