@@ -11,3 +11,4 @@ frontend/dist/
 /models/*.json
 /models/*.pkl
 .DS_Store
+.worktrees/
