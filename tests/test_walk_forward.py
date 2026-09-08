@@ -60,3 +60,13 @@ def test_evaluate_candidate_rejects_unknown_candidate():
 
     with pytest.raises(ValueError):
         walk_forward.evaluate_candidate(folds, "not-a-real-candidate")
+
+
+def test_pooled_predictions_concatenates_every_folds_probs_and_outcomes():
+    folds = walk_forward.prepare_folds(_multi_season_games(), min_train_seasons=2)
+
+    probs, outcomes = walk_forward.pooled_predictions(folds, "ridge")
+
+    expected_len = sum(len(fold["val_df"]) for fold in folds)
+    assert len(probs) == expected_len
+    assert len(outcomes) == expected_len

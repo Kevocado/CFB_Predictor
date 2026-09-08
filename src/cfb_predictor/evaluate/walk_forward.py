@@ -81,6 +81,19 @@ def _predict_margins(candidate: str, train_df: pd.DataFrame, val_df: pd.DataFram
     return preds, sigma
 
 
+def pooled_predictions(folds: list[dict], candidate: str) -> tuple[np.ndarray, np.ndarray]:
+    """All folds' held-out probs/outcomes concatenated -- enough volume for
+    a meaningful reliability curve, unlike any single fold alone."""
+    all_probs, all_outcomes = [], []
+    for fold in folds:
+        train_df, val_df, feature_cols = fold["train_df"], fold["val_df"], fold["feature_cols"]
+        preds, sigma = _predict_margins(candidate, train_df, val_df, feature_cols)
+        probs = np.array([game_outcome.margin_to_probabilities(m, sigma)["home_win_prob"] for m in preds])
+        all_probs.append(np.clip(probs, 1e-6, 1 - 1e-6))
+        all_outcomes.append((val_df["margin"] > 0).astype(int).to_numpy())
+    return np.concatenate(all_probs), np.concatenate(all_outcomes)
+
+
 def evaluate_candidate(folds: list[dict], candidate: str) -> pd.DataFrame:
     rows = []
     for fold in folds:
