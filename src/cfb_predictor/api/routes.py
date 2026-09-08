@@ -341,6 +341,14 @@ def get_track_record():
     return store.get_track_record()
 
 
+@router.get("/games/{game_id}/verdict")
+def get_game_verdict(game_id: str):
+    verdict = store.get_game_verdict(game_id)
+    if verdict is None:
+        raise HTTPException(status_code=404, detail="Game not tracked or not yet resolved")
+    return verdict
+
+
 @router.post("/retrain")
 def retrain():
     if PUBLIC_MODE:

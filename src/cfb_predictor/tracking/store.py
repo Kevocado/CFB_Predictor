@@ -194,6 +194,35 @@ def get_track_record() -> dict:
     }
 
 
+def get_game_verdict(game_id: str) -> dict | None:
+    with contextlib.closing(_connect()) as conn:
+        rows = pd.read_sql("SELECT * FROM game_predictions WHERE game_id = ?", conn, params=(game_id,))
+    if rows.empty or not rows.iloc[0]["resolved"]:
+        return None
+    row = rows.iloc[0]
+
+    predicted_home_win = row["home_win_prob"] >= row["away_win_prob"]
+    actual_home_win = row["actual_home_score"] > row["actual_away_score"]
+    verdict = {
+        "game_id": game_id,
+        "resolved": True,
+        "moneyline": {
+            "hit": bool(row["moneyline_hit"]),
+            "predicted": "home_win" if predicted_home_win else "away_win",
+            "actual": "home_win" if actual_home_win else "away_win",
+        },
+        "ats": None,
+        "totals": None,
+    }
+    if pd.notna(row["ats_hit"]):
+        predicted_home_cover = (row["home_cover_prob"] or 0) >= (row["away_cover_prob"] or 0)
+        verdict["ats"] = {"hit": bool(row["ats_hit"]), "predicted": "home_cover" if predicted_home_cover else "away_cover"}
+    if pd.notna(row["total_hit"]):
+        predicted_over = (row["over_prob"] or 0) >= (row["under_prob"] or 0)
+        verdict["totals"] = {"hit": bool(row["total_hit"]), "predicted": "over" if predicted_over else "under"}
+    return verdict
+
+
 def record_player_prop_predictions(props: list[dict]) -> int:
     if not props:
         return 0

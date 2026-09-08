@@ -72,6 +72,14 @@ def test_get_track_record(client):
     assert response.json()["n_resolved_games"] == 0
 
 
+def test_get_game_verdict_404s_when_not_resolved(client, monkeypatch):
+    monkeypatch.setattr(routes.store, "get_game_verdict", lambda game_id: None)
+
+    response = client.get("/api/games/nope/verdict")
+
+    assert response.status_code == 404
+
+
 def test_get_games_handles_nan_scores_for_unplayed_games(client, monkeypatch):
     monkeypatch.setattr(
         routes.games_data, "fetch_upcoming_games",

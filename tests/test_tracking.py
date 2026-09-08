@@ -98,3 +98,23 @@ def test_backfill_catches_a_prior_season_row_current_season_partial_would_miss(m
     resolved = store.backfill_unresolved_games(games_data)
 
     assert resolved == 1
+
+
+def test_get_game_verdict_returns_none_for_unresolved_game():
+    store.record_game_predictions([_future_game()])
+
+    assert store.get_game_verdict("g1") is None
+
+
+def test_get_game_verdict_summarizes_all_three_markets():
+    store.record_game_predictions([_future_game()])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+
+    verdict = store.get_game_verdict("g1")
+
+    assert verdict["resolved"] is True
+    assert verdict["moneyline"]["predicted"] == "home_win"
+    assert verdict["moneyline"]["actual"] == "home_win"
+    assert verdict["moneyline"]["hit"] is True
+    assert verdict["ats"]["predicted"] == "home_cover"
+    assert verdict["totals"] is not None
