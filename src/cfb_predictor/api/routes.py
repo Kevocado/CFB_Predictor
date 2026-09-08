@@ -374,7 +374,9 @@ def background_tracking_tick(season: int, week: int) -> None:
                 predictions.append(
                     {
                         "game_id": game["game_id"], "home_team": game["home_team"], "away_team": game["away_team"],
-                        "commence_time": str(game["gameday"]), **pred,
+                        "commence_time": str(game["gameday"]),
+                        "home_spread_line": spread_line, "total_line": total_line,
+                        **pred,
                     }
                 )
             except Exception:

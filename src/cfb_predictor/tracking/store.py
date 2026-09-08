@@ -39,13 +39,22 @@ def _connect() -> sqlite3.Connection:
             away_cover_prob REAL,
             over_prob REAL,
             under_prob REAL,
+            home_spread_line REAL,
+            total_line REAL,
             resolved INTEGER NOT NULL DEFAULT 0,
             actual_home_score INTEGER,
             actual_away_score INTEGER,
-            moneyline_hit INTEGER
+            moneyline_hit INTEGER,
+            ats_hit INTEGER,
+            total_hit INTEGER
         )
         """
     )
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(game_predictions)")}
+    for column in ("home_spread_line", "total_line", "ats_hit", "total_hit"):
+        if column not in existing_cols:
+            conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} REAL" if column in ("home_spread_line", "total_line")
+                         else f"ALTER TABLE game_predictions ADD COLUMN {column} INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS player_prop_predictions (
@@ -96,6 +105,7 @@ def record_game_predictions(games: list[dict]) -> int:
             float(game["home_win_prob"]), float(game["away_win_prob"]),
             game.get("home_cover_prob"), game.get("away_cover_prob"),
             game.get("over_prob"), game.get("under_prob"),
+            game.get("home_spread_line"), game.get("total_line"),
         )
         for game in valid_games
     ]
@@ -104,8 +114,9 @@ def record_game_predictions(games: list[dict]) -> int:
             """
             INSERT OR IGNORE INTO game_predictions
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
-                 home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
+                 home_spread_line, total_line)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -126,13 +137,29 @@ def reconcile_game_predictions(results_df: pd.DataFrame) -> int:
             home_win = row["home_score"] > row["away_score"]
             predicted_home_win = row["home_win_prob"] >= row["away_win_prob"]
             moneyline_hit = int(predicted_home_win == home_win)
+
+            ats_hit = None
+            if pd.notna(row.get("home_spread_line")):
+                home_margin = row["home_score"] - row["away_score"]
+                home_covered = (home_margin + row["home_spread_line"]) > 0
+                predicted_home_cover = (row.get("home_cover_prob") or 0) >= (row.get("away_cover_prob") or 0)
+                ats_hit = int(predicted_home_cover == home_covered)
+
+            total_hit = None
+            if pd.notna(row.get("total_line")):
+                actual_total = row["home_score"] + row["away_score"]
+                went_over = actual_total > row["total_line"]
+                predicted_over = (row.get("over_prob") or 0) >= (row.get("under_prob") or 0)
+                total_hit = int(predicted_over == went_over)
+
             cursor = conn.execute(
                 """
                 UPDATE game_predictions
-                SET resolved = 1, actual_home_score = ?, actual_away_score = ?, moneyline_hit = ?
+                SET resolved = 1, actual_home_score = ?, actual_away_score = ?,
+                    moneyline_hit = ?, ats_hit = ?, total_hit = ?
                 WHERE game_id = ? AND resolved = 0
                 """,
-                (int(row["home_score"]), int(row["away_score"]), moneyline_hit, row["game_id"]),
+                (int(row["home_score"]), int(row["away_score"]), moneyline_hit, ats_hit, total_hit, row["game_id"]),
             )
             resolved_count += cursor.rowcount
         return resolved_count
