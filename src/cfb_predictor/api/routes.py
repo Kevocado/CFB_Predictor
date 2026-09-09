@@ -87,10 +87,20 @@ def _snapshot_week(season: int, week: int) -> dict | None:
 
 
 def current_season_and_week() -> tuple[int, int]:
-    """Calendar-based estimate for current CFB season and week."""
+    """Current CFB season/week, anchored to the real schedule's own week-1
+    kickoff date rather than a hardcoded month/day guess. A fixed
+    `date(season, 8, 20)` anchor drifts every year the season's actual
+    opening week doesn't start exactly then (confirmed live: it was a full
+    week ahead of the real current week)."""
     today = date.today()
     season = today.year if today.month >= 2 else today.year - 1
-    week = max(1, min(20, ((today - date(season, 8, 20)).days // 7) + 1))
+    try:
+        schedule = games_data.fetch_schedules([season])
+        week1_start = schedule.loc[schedule["week"] == 1, "gameday"].min()
+        anchor = week1_start.date() if pd.notna(week1_start) else date(season, 8, 20)
+    except Exception:
+        anchor = date(season, 8, 20)
+    week = max(1, min(20, ((today - anchor).days // 7) + 1))
     return season, week
 
 
