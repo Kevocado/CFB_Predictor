@@ -8,15 +8,22 @@ instead, matched by team name.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import date
 from functools import lru_cache
 
 import pandas as pd
+import requests
 from fastapi import APIRouter, HTTPException
 
-from ..config import CURRENT_SEASON, PUBLIC_MODE
+from ..config import (
+    CURRENT_SEASON,
+    PUBLIC_MODE,
+    PUBLIC_SNAPSHOT_PATH,
+    PUBLIC_SNAPSHOT_REFRESH_URL,
+)
 from ..data import games as games_data
 from ..data import odds_api, player_stats
 from ..features import build as feature_build
@@ -28,6 +35,55 @@ from ..tracking import store
 router = APIRouter(prefix="/api")
 
 logger = logging.getLogger(__name__)
+
+_public_snapshot_cache: dict | None = None
+_public_snapshot_etag: str | None = None
+
+
+def _public_snapshot() -> dict:
+    """The precomputed data public_snapshot.py generates. Cold-start value
+    is whatever was baked into this image at build time; a running process
+    then keeps it current via refresh_public_snapshot_from_remote below,
+    polled on a timer (see api/main.py's lifespan). Empty dict if none has
+    been generated yet, so every PUBLIC_MODE branch below just falls
+    through to a live compute instead of a 500."""
+    global _public_snapshot_cache
+    if _public_snapshot_cache is None:
+        _public_snapshot_cache = (
+            json.loads(PUBLIC_SNAPSHOT_PATH.read_text()) if PUBLIC_SNAPSHOT_PATH.exists() else {}
+        )
+    return _public_snapshot_cache
+
+
+def refresh_public_snapshot_from_remote() -> bool:
+    """Re-fetch the precomputed public snapshot from its GitHub raw URL and
+    swap it in -- lets the scheduled snapshot-refresh GitHub Action reach
+    this running process without a Docker rebuild+redeploy. ETag-conditional
+    so an unchanged snapshot costs one small request. Any fetch/parse
+    failure is swallowed and leaves the previous snapshot serving -- a
+    transient network hiccup here must never blank an already-working
+    public site."""
+    global _public_snapshot_cache, _public_snapshot_etag
+    try:
+        headers = {"If-None-Match": _public_snapshot_etag} if _public_snapshot_etag else {}
+        resp = requests.get(PUBLIC_SNAPSHOT_REFRESH_URL, headers=headers, timeout=30)
+        if resp.status_code == 304:
+            return False
+        resp.raise_for_status()
+        snapshot = resp.json()
+    except Exception as exc:
+        logger.info("public snapshot remote refresh skipped: %s", exc)
+        return False
+    _public_snapshot_cache = snapshot
+    _public_snapshot_etag = resp.headers.get("ETag")
+    return True
+
+
+def _snapshot_week(season: int, week: int) -> dict | None:
+    snap = _public_snapshot()
+    if snap.get("season") != season:
+        return None
+    return snap.get("weeks", {}).get(str(week))
 
 
 def current_season_and_week() -> tuple[int, int]:
@@ -225,6 +281,14 @@ def _load_player_history(season: int) -> pd.DataFrame:
 
 @router.get("/games")
 def get_games(season: int, week: int):
+    if PUBLIC_MODE:
+        snap = _snapshot_week(season, week)
+        if snap is not None:
+            return snap["games"]
+    return _get_games_live(season, week)
+
+
+def _get_games_live(season: int, week: int):
     games = games_data.fetch_upcoming_games(season, week)
     games = games.astype(object).where(pd.notna(games), None)
     return games.to_dict("records")
@@ -232,6 +296,16 @@ def get_games(season: int, week: int):
 
 @router.get("/games/{season}/{week}/{game_id}/prediction")
 def get_game_prediction(season: int, week: int, game_id: str):
+    if PUBLIC_MODE:
+        snap = _snapshot_week(season, week)
+        if snap is not None:
+            pred = snap["predictions"].get(game_id)
+            if pred is not None:
+                return pred
+    return _get_game_prediction_live(season, week, game_id)
+
+
+def _get_game_prediction_live(season: int, week: int, game_id: str):
     games = games_data.fetch_upcoming_games(season, week)
     matches = games[games["game_id"] == game_id]
     if matches.empty:
@@ -251,6 +325,14 @@ def get_game_prediction(season: int, week: int, game_id: str):
 
 @router.get("/players/{season}/{week}/props")
 def get_player_props(season: int, week: int):
+    if PUBLIC_MODE:
+        snap = _snapshot_week(season, week)
+        if snap is not None:
+            return snap["player_props"]
+    return _get_player_props_live(season, week)
+
+
+def _get_player_props_live(season: int, week: int):
     try:
         models = _load_models_cached()
         player_history = _load_player_history(season)

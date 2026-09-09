@@ -3,8 +3,8 @@ name: Deploy CFB Predictor to Azure Container Apps
 on:
   push:
     branches: [main]
-    paths:
-      - '**'
+    paths-ignore:
+      - 'data/public_snapshot.json'
 
 permissions:
   id-token: write

@@ -12,8 +12,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
-from ..config import PUBLIC_MODE
-from .routes import current_season_and_week, router, background_tracking_tick
+from ..config import PUBLIC_MODE, PUBLIC_SNAPSHOT_POLL_SECONDS
+from .routes import (
+    current_season_and_week,
+    refresh_public_snapshot_from_remote,
+    router,
+    background_tracking_tick,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +35,26 @@ async def _tracking_loop():
             logger.exception("background_tracking_tick failed")
 
 
+async def _public_snapshot_poll_loop():
+    while True:
+        await asyncio.to_thread(refresh_public_snapshot_from_remote)
+        await asyncio.sleep(PUBLIC_SNAPSHOT_POLL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    tracking_task = asyncio.create_task(_tracking_loop())
+    # The public deployment serves games/predictions/player-props from
+    # public_snapshot.py's precomputed file (see routes.py's PUBLIC_MODE
+    # branches). The tracking loop still runs regardless -- it's what
+    # feeds the track-record/verdict history, is already throttled by its
+    # own TTLs (see data/games.py's _CURRENT_SEASON_TTL_SECONDS), and skipping
+    # it would leave that feature permanently empty on the public deployment.
+    tasks = [asyncio.create_task(_tracking_loop())]
+    if PUBLIC_MODE:
+        tasks.append(asyncio.create_task(_public_snapshot_poll_loop()))
     yield
-    tracking_task.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="CFB Predictor API", lifespan=lifespan)

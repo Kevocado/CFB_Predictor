@@ -1,0 +1,67 @@
+name: Refresh public snapshot
+
+# Runs public_snapshot.py on GitHub's own infrastructure and pushes
+# data/public_snapshot.json if it changed. The deploy workflow ignores
+# this path (see deploy-azure-cfb.yml's paths-ignore) -- the running
+# container instead picks the new snapshot up within
+# PUBLIC_SNAPSHOT_POLL_SECONDS by polling this file's raw GitHub URL (see
+# api/routes.py::refresh_public_snapshot_from_remote), no redeploy needed.
+#
+# This is also the ONLY place CFBD calls should happen now -- every
+# request-time call was what exhausted the 1,000/month quota. Running
+# this a few times a day, with a warm data-cache restored below, keeps
+# that budget nowhere close to exhausted.
+
+on:
+  schedule:
+    # CFB kickoffs run Thu evening through Saturday night; every 4 hours
+    # covers a full week without a day-of-week split.
+    - cron: "25 */4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      # data/cache/ (CFBD games/rosters/player-stats, all gitignored) is
+      # what keeps repeated runs within CFBD's call budget: each season's
+      # fetch and the season roster are both cached to their own file. A
+      # fresh checkout starts with none of that.
+      - name: Restore data cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: data-cache-${{ github.run_id }}
+          restore-keys: |
+            data-cache-
+
+      - name: Build snapshot
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python -m cfb_predictor.public_snapshot
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet -- data/public_snapshot.json; then
+            echo "No change, nothing to push."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/public_snapshot.json
+          git commit -m "Refresh public snapshot [automated]"
+          git push
