@@ -21,6 +21,7 @@ supplied.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -28,6 +29,8 @@ import pandas as pd
 import cfbd
 
 from ..config import CFBD_API_KEY, CURRENT_SEASON, GAMES_CACHE_DIR, TEAMS_CACHE_DIR
+
+logger = logging.getLogger(__name__)
 
 # Re-fetch the in-progress season at most this often. CFBD's free tier caps
 # API access at 1,000 calls/month; unconditionally force-refreshing the
@@ -161,9 +164,21 @@ def fetch_schedules(seasons: list[int], force_refresh: bool = False) -> pd.DataF
         if not force_refresh and path.exists():
             frames.append(pd.read_parquet(path))
             continue
-        fetched = _normalize_games(_import_games(season))
-        fetched.to_parquet(path)
-        frames.append(pd.read_parquet(path))
+        try:
+            fetched = _normalize_games(_import_games(season))
+            fetched.to_parquet(path)
+            frames.append(pd.read_parquet(path))
+        except Exception:
+            # CFBD errors here (most commonly the free tier's monthly quota,
+            # or a cold-started container with no cache on disk yet) used to
+            # 500 every endpoint built on this. Fall back to a stale cache
+            # if one exists rather than a hard failure; skip the season
+            # entirely (not a crash) if there's nothing to fall back to.
+            if path.exists():
+                logger.warning("CFBD fetch failed for season=%s; serving stale cache", season)
+                frames.append(pd.read_parquet(path))
+            else:
+                logger.warning("CFBD fetch failed for season=%s; no cache available, skipping", season)
 
     if not frames:
         return pd.DataFrame(columns=KEEP_COLUMNS)
