@@ -123,6 +123,32 @@ def record_game_predictions(games: list[dict]) -> int:
         return cursor.rowcount
 
 
+def _compute_hits(
+    home_score: float, away_score: float, home_win_prob: float, away_win_prob: float,
+    home_spread_line: float | None, home_cover_prob: float | None, away_cover_prob: float | None,
+    total_line: float | None, over_prob: float | None, under_prob: float | None,
+) -> tuple[int, int | None, int | None]:
+    home_win = home_score > away_score
+    predicted_home_win = home_win_prob >= away_win_prob
+    moneyline_hit = int(predicted_home_win == home_win)
+
+    ats_hit = None
+    if home_spread_line is not None and pd.notna(home_spread_line):
+        home_margin = home_score - away_score
+        home_covered = home_margin > home_spread_line
+        predicted_home_cover = (home_cover_prob or 0) >= (away_cover_prob or 0)
+        ats_hit = int(predicted_home_cover == home_covered)
+
+    total_hit = None
+    if total_line is not None and pd.notna(total_line):
+        actual_total = home_score + away_score
+        went_over = actual_total > total_line
+        predicted_over = (over_prob or 0) >= (under_prob or 0)
+        total_hit = int(predicted_over == went_over)
+
+    return moneyline_hit, ats_hit, total_hit
+
+
 def reconcile_game_predictions(results_df: pd.DataFrame) -> int:
     if results_df.empty:
         return 0
@@ -134,24 +160,11 @@ def reconcile_game_predictions(results_df: pd.DataFrame) -> int:
         merged = unresolved.merge(results_df, on="game_id", how="inner")
         resolved_count = 0
         for _, row in merged.iterrows():
-            home_win = row["home_score"] > row["away_score"]
-            predicted_home_win = row["home_win_prob"] >= row["away_win_prob"]
-            moneyline_hit = int(predicted_home_win == home_win)
-
-            ats_hit = None
-            if pd.notna(row.get("home_spread_line")):
-                home_margin = row["home_score"] - row["away_score"]
-                home_covered = home_margin > row["home_spread_line"]
-                predicted_home_cover = (row.get("home_cover_prob") or 0) >= (row.get("away_cover_prob") or 0)
-                ats_hit = int(predicted_home_cover == home_covered)
-
-            total_hit = None
-            if pd.notna(row.get("total_line")):
-                actual_total = row["home_score"] + row["away_score"]
-                went_over = actual_total > row["total_line"]
-                predicted_over = (row.get("over_prob") or 0) >= (row.get("under_prob") or 0)
-                total_hit = int(predicted_over == went_over)
-
+            moneyline_hit, ats_hit, total_hit = _compute_hits(
+                row["home_score"], row["away_score"], row["home_win_prob"], row["away_win_prob"],
+                row.get("home_spread_line"), row.get("home_cover_prob"), row.get("away_cover_prob"),
+                row.get("total_line"), row.get("over_prob"), row.get("under_prob"),
+            )
             cursor = conn.execute(
                 """
                 UPDATE game_predictions
@@ -163,6 +176,62 @@ def reconcile_game_predictions(results_df: pd.DataFrame) -> int:
             )
             resolved_count += cursor.rowcount
         return resolved_count
+
+
+def get_untracked_game_ids(game_ids: list[str]) -> set[str]:
+    """Which of these game_ids have no row in game_predictions at all yet
+    -- never snapshotted before kickoff (distinct from "pending", which
+    means snapshotted but not yet resolved). Used to backfill a game the
+    tracker missed entirely, e.g. because the tracking loop wasn't
+    running yet when it kicked off."""
+    if not game_ids:
+        return set()
+    with contextlib.closing(_connect()) as conn:
+        placeholders = ",".join("?" * len(game_ids))
+        tracked = pd.read_sql(
+            f"SELECT game_id FROM game_predictions WHERE game_id IN ({placeholders})", conn, params=game_ids
+        )
+    return set(game_ids) - set(tracked["game_id"])
+
+
+def record_resolved_game_predictions(games: list[dict]) -> int:
+    """Backfill a prediction snapshot for an already-finished game that was
+    never tracked before kickoff -- records the prediction AND its known
+    outcome in one shot, skipping the pre-kickoff requirement since
+    there's no live pregame moment left to protect. Each game dict's
+    prediction fields must already come from strictly pre-game
+    information (the caller's job); this function only persists it."""
+    if not games:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for game in games:
+        moneyline_hit, ats_hit, total_hit = _compute_hits(
+            game["actual_home_score"], game["actual_away_score"], game["home_win_prob"], game["away_win_prob"],
+            game.get("home_spread_line"), game.get("home_cover_prob"), game.get("away_cover_prob"),
+            game.get("total_line"), game.get("over_prob"), game.get("under_prob"),
+        )
+        rows.append((
+            game["game_id"], game["home_team"], game["away_team"], game["commence_time"], now,
+            float(game["home_win_prob"]), float(game["away_win_prob"]),
+            game.get("home_cover_prob"), game.get("away_cover_prob"),
+            game.get("over_prob"), game.get("under_prob"),
+            game.get("home_spread_line"), game.get("total_line"), game.get("season"), game.get("week"),
+            1, int(game["actual_home_score"]), int(game["actual_away_score"]), moneyline_hit, ats_hit, total_hit,
+        ))
+    with contextlib.closing(_connect()) as conn, conn:
+        cursor = conn.executemany(
+            """
+            INSERT OR IGNORE INTO game_predictions
+                (game_id, home_team, away_team, commence_time, snapshotted_at,
+                 home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
+                 home_spread_line, total_line, season, week,
+                 resolved, actual_home_score, actual_away_score, moneyline_hit, ats_hit, total_hit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        return cursor.rowcount
 
 
 def backfill_unresolved_games(games_data_module) -> int:
