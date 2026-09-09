@@ -269,45 +269,21 @@ def get_player_props(season: int, week: int):
         found_teams = set(latest_players["recent_team"].unique())
         missing_teams = active_teams - found_teams
 
-        # 3. Fallback: If any active team has zero player stats recorded yet, fetch their roster via CFBD TeamsApi
+        # 3. Fallback: a team with no current-season stats yet (week 1, or a
+        # bye-to-opener gap) pulls from the cached full-FBS roster instead —
+        # fetched at most once a week (data/player_stats.py's
+        # fetch_season_roster), not once per request per missing team like
+        # the old CFBD TeamsApi.get_roster fallback did.
         if missing_teams:
-            import os
-            import cfbd
-            from ..data.games import _cfbd_configuration
-            
-            with cfbd.ApiClient(_cfbd_configuration()) as api_client:
-                key = os.getenv("CFBD_API_KEY", "").strip()
-                if key:
-                    if not key.startswith("Bearer "):
-                        key = f"Bearer {key}"
-                    api_client.default_headers['Authorization'] = key
-                
-                teams_api = cfbd.TeamsApi(api_client)
-                fallback_rows = []
-                for team_name in missing_teams:
-                    try:
-                        roster = teams_api.get_roster(team=team_name, year=season)
-                        for player in roster:
-                            p_id = getattr(player, "id", None) or getattr(player, "athlete_id", "roster_" + str(getattr(player, "last_name", "")))
-                            fname = getattr(player, "first_name", "") or ""
-                            lname = getattr(player, "last_name", "") or ""
-                            full_name = f"{fname} {lname}".strip() or "Unknown Player"
-                            pos = getattr(player, "position", "ATH") or "ATH"
-                            
-                            # Only pull offensive skill players during fallback to skip cluttering with linemen/defenders
-                            if pos in {"WR", "TE", "RB", "QB"}:
-                                fallback_rows.append({
-                                    "player_id": str(p_id),
-                                    "player_name": full_name,
-                                    "position": pos,
-                                    "recent_team": team_name,
-                                })
-                    except Exception as roster_err:
-                        logger.warning("Failed to fetch roster fallback for team=%s: %s", team_name, roster_err)
-                
-                if fallback_rows:
-                    df_fallback = pd.DataFrame(fallback_rows)
-                    latest_players = pd.concat([latest_players, df_fallback], ignore_index=True).drop_duplicates("player_id")
+            try:
+                roster = player_stats.fetch_season_roster(season)
+                fallback = roster[
+                    roster["recent_team"].isin(missing_teams) & roster["position"].isin({"WR", "TE", "RB", "QB"})
+                ]
+                if not fallback.empty:
+                    latest_players = pd.concat([latest_players, fallback], ignore_index=True).drop_duplicates("player_id")
+            except Exception as roster_err:
+                logger.warning("Failed to load roster fallback for teams=%s: %s", missing_teams, roster_err)
 
         results = []
         for _, player in latest_players.iterrows():

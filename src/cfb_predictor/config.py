@@ -19,6 +19,7 @@ GAMES_CACHE_DIR = CACHE_DIR / "games"
 TEAMS_CACHE_DIR = CACHE_DIR / "teams"
 PLAYER_STATS_CACHE_DIR = CACHE_DIR / "player_stats"
 ODDS_CACHE_DIR = CACHE_DIR / "odds"
+ROSTER_CACHE_DIR = CACHE_DIR / "rosters"
 
 CURRENT_SEASON = 2026  # bump each new CFB season (typically August)
 
@@ -41,5 +42,6 @@ for _d in (
     TEAMS_CACHE_DIR,
     PLAYER_STATS_CACHE_DIR,
     ODDS_CACHE_DIR,
+    ROSTER_CACHE_DIR,
 ):
     _d.mkdir(parents=True, exist_ok=True)

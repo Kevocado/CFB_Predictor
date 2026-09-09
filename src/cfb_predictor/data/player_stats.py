@@ -13,9 +13,22 @@ payload only carries a game id per top-level entry, not a week number.
 
 from __future__ import annotations
 
+import logging
+import time
+
 import pandas as pd
 
-from ..config import CFBD_API_KEY, PLAYER_STATS_CACHE_DIR
+from ..config import CFBD_API_KEY, PLAYER_STATS_CACHE_DIR, ROSTER_CACHE_DIR
+
+logger = logging.getLogger(__name__)
+
+# Full FBS roster (player identity: name/position/team) changes rarely —
+# a handful of transfers/injuries a week at most, nothing that needs
+# same-day freshness. Re-fetching it on every player-props request (as the
+# old per-team CFBD TeamsApi.get_roster fallback did) was the single
+# biggest driver of CFBD's 1,000-calls/month quota getting exhausted.
+# One call covers every FBS team for the season; refresh at most weekly.
+_ROSTER_TTL_SECONDS = 7 * 24 * 60 * 60
 
 KEEP_COLUMNS = [
     "player_id", "player_name", "position", "recent_team", "season", "week",
@@ -165,13 +178,81 @@ def fetch_weekly_player_stats(
         if not force_refresh and path.exists():
             frames.append(pd.read_parquet(path))
             continue
-        season_games = games_df[games_df["season"] == season]
-        weeks = sorted(int(w) for w in season_games["week"].dropna().unique())
-        raw = _import_player_game_stats(season, weeks)
-        flattened = _flatten_player_game_stats(raw, season_games, season)
-        flattened.to_parquet(path)
-        frames.append(pd.read_parquet(path))
+        try:
+            season_games = games_df[games_df["season"] == season]
+            weeks = sorted(int(w) for w in season_games["week"].dropna().unique())
+            raw = _import_player_game_stats(season, weeks)
+            flattened = _flatten_player_game_stats(raw, season_games, season)
+            flattened.to_parquet(path)
+            frames.append(pd.read_parquet(path))
+        except Exception:
+            if path.exists():
+                logger.warning("CFBD player-stats fetch failed for season=%s; serving stale cache", season)
+                frames.append(pd.read_parquet(path))
+            else:
+                logger.warning("CFBD player-stats fetch failed for season=%s; no cache available, skipping", season)
 
     if not frames:
         return pd.DataFrame(columns=KEEP_COLUMNS)
     return pd.concat(frames, ignore_index=True).sort_values(["season", "week"]).reset_index(drop=True)
+
+
+def _roster_cache_path(season: int):
+    return ROSTER_CACHE_DIR / f"{season}.parquet"
+
+
+def _import_season_roster(season: int) -> pd.DataFrame:
+    """One call for every FBS team's full roster this season — replaces the
+    old fallback's one-call-per-missing-team-per-request pattern."""
+    import os
+
+    import cfbd
+
+    from .games import _cfbd_configuration
+
+    with cfbd.ApiClient(_cfbd_configuration()) as api_client:
+        key = os.getenv("CFBD_API_KEY", "").strip()
+        if key:
+            if not key.startswith("Bearer "):
+                key = f"Bearer {key}"
+            api_client.default_headers["Authorization"] = key
+        teams_api = cfbd.TeamsApi(api_client)
+        roster = teams_api.get_roster(year=season, classification="fbs")
+
+    rows = []
+    for player in roster:
+        p_id = getattr(player, "id", None) or getattr(player, "athlete_id", None)
+        if p_id is None:
+            continue
+        fname = getattr(player, "first_name", "") or ""
+        lname = getattr(player, "last_name", "") or ""
+        full_name = f"{fname} {lname}".strip() or "Unknown Player"
+        rows.append({
+            "player_id": str(p_id),
+            "player_name": full_name,
+            "position": getattr(player, "position", "ATH") or "ATH",
+            "recent_team": getattr(player, "team", "") or "",
+        })
+    return pd.DataFrame(rows, columns=["player_id", "player_name", "position", "recent_team"])
+
+
+def fetch_season_roster(season: int, force_refresh: bool = False) -> pd.DataFrame:
+    """Player identity (name/position/team) for the whole FBS, persisted to
+    disk and only re-fetched once the cache is missing or older than
+    _ROSTER_TTL_SECONDS — this is the data that "only updates when it
+    changes"; weekly *predictions* are computed fresh from it every time,
+    but the roster fetch itself is not repeated per request."""
+    path = _roster_cache_path(season)
+    is_stale = not path.exists() or (time.time() - path.stat().st_mtime) > _ROSTER_TTL_SECONDS
+    if not force_refresh and not is_stale:
+        return pd.read_parquet(path)
+    try:
+        roster = _import_season_roster(season)
+        roster.to_parquet(path)
+        return roster
+    except Exception:
+        if path.exists():
+            logger.warning("CFBD roster fetch failed for season=%s; serving stale cache", season)
+            return pd.read_parquet(path)
+        logger.warning("CFBD roster fetch failed for season=%s; no cache available", season)
+        return pd.DataFrame(columns=["player_id", "player_name", "position", "recent_team"])
