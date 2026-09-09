@@ -4,7 +4,6 @@ import asyncio
 import logging
 import traceback
 from contextlib import asynccontextmanager
-from datetime import date
 
 from dotenv import load_dotenv
 load_dotenv()  # This loads variables from your .env file into os.environ
@@ -14,25 +13,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from ..config import PUBLIC_MODE
-from .routes import router, background_tracking_tick
+from .routes import current_season_and_week, router, background_tracking_tick
 
 logger = logging.getLogger(__name__)
 
 _TRACKING_INTERVAL_SECONDS = 3600
 
 
-def _current_season_and_week() -> tuple[int, int]:
-    today = date.today()
-    season = today.year if today.month >= 2 else today.year - 1
-    week = max(1, min(20, ((today - date(season, 8, 20)).days // 7) + 1))
-    return season, week
-
-
 async def _tracking_loop():
     while True:
         await asyncio.sleep(_TRACKING_INTERVAL_SECONDS)
         try:
-            season, week = _current_season_and_week()
+            season, week = current_season_and_week()
             await asyncio.to_thread(background_tracking_tick, season, week)
         except Exception:
             logger.exception("background_tracking_tick failed")

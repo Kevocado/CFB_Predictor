@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date
 from functools import lru_cache
 
 import pandas as pd
@@ -27,6 +28,20 @@ from ..tracking import store
 router = APIRouter(prefix="/api")
 
 logger = logging.getLogger(__name__)
+
+
+def current_season_and_week() -> tuple[int, int]:
+    """Calendar-based estimate for current CFB season and week."""
+    today = date.today()
+    season = today.year if today.month >= 2 else today.year - 1
+    week = max(1, min(20, ((today - date(season, 8, 20)).days // 7) + 1))
+    return season, week
+
+
+@router.get("/current-week")
+def get_current_week():
+    season, week = current_season_and_week()
+    return {"season": season, "week": week}
 
 # Re-fetch the current season's weekly player stats at most this often,
 # same TTL rationale as data/games.py's _CURRENT_SEASON_TTL_SECONDS --
