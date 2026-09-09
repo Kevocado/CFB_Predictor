@@ -51,7 +51,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(game_predictions)")}
-    for column in ("home_spread_line", "total_line", "ats_hit", "total_hit", "season"):
+    for column in ("home_spread_line", "total_line", "ats_hit", "total_hit", "season", "week"):
         if column not in existing_cols:
             conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} REAL" if column in ("home_spread_line", "total_line")
                          else f"ALTER TABLE game_predictions ADD COLUMN {column} INTEGER")
@@ -105,7 +105,7 @@ def record_game_predictions(games: list[dict]) -> int:
             float(game["home_win_prob"]), float(game["away_win_prob"]),
             game.get("home_cover_prob"), game.get("away_cover_prob"),
             game.get("over_prob"), game.get("under_prob"),
-            game.get("home_spread_line"), game.get("total_line"), game.get("season"),
+            game.get("home_spread_line"), game.get("total_line"), game.get("season"), game.get("week"),
         )
         for game in valid_games
     ]
@@ -115,8 +115,8 @@ def record_game_predictions(games: list[dict]) -> int:
             INSERT OR IGNORE INTO game_predictions
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
                  home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
-                 home_spread_line, total_line, season)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 home_spread_line, total_line, season, week)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -184,14 +184,71 @@ def backfill_unresolved_games(games_data_module) -> int:
 
 
 def get_track_record() -> dict:
+    """Aggregate accuracy summary across every reconciled game and player
+    prop -- not a per-game list (the frontend already has that in the game
+    detail modal's own verdict section; this is the "how good is the model
+    overall" view, same shape as PL_Predictor's Data Hub track record)."""
     with contextlib.closing(_connect()) as conn, conn:
-        resolved = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 1", conn)
+        resolved_games = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 1", conn)
+        resolved_props = pd.read_sql("SELECT * FROM player_prop_predictions WHERE resolved = 1", conn)
+    return {"games": _summarize_games(resolved_games), "player_props": _summarize_player_props(resolved_props)}
+
+
+def _summarize_games(resolved: pd.DataFrame) -> dict:
     if resolved.empty:
-        return {"n_resolved_games": 0, "pct_moneyline_correct": None}
+        return {
+            "n_resolved": 0, "pct_moneyline_correct": None, "pct_ats_correct": None,
+            "pct_totals_correct": None, "weekly_trend": [],
+        }
+    ats = resolved[resolved["ats_hit"].notna()]
+    totals = resolved[resolved["total_hit"].notna()]
+
+    weekly_trend = []
+    with_week = resolved[resolved["week"].notna()]
+    if not with_week.empty:
+        grouped = with_week.groupby("week")["moneyline_hit"].agg(["mean", "size"]).reset_index()
+        weekly_trend = [
+            {"week": int(r["week"]), "pct_moneyline_correct": float(r["mean"]), "n_games": int(r["size"])}
+            for _, r in grouped.sort_values("week").iterrows()
+        ]
+
     return {
-        "n_resolved_games": int(len(resolved)),
+        "n_resolved": int(len(resolved)),
         "pct_moneyline_correct": float(resolved["moneyline_hit"].mean()),
+        "pct_ats_correct": float(ats["ats_hit"].mean()) if not ats.empty else None,
+        "pct_totals_correct": float(totals["total_hit"].mean()) if not totals.empty else None,
+        "weekly_trend": weekly_trend,
     }
+
+
+_YARDAGE_MARKETS = ("passing_yards", "rushing_yards", "receiving_yards")
+
+
+def _summarize_player_props(resolved: pd.DataFrame) -> dict:
+    result: dict[str, dict] = {}
+
+    anytime_td = resolved[resolved["market"] == "anytime_td"]
+    if anytime_td.empty:
+        result["anytime_td"] = {"n_resolved": 0, "hit_rate_when_called": None, "brier_score": None}
+    else:
+        called = anytime_td[anytime_td["predicted_value"] >= 0.5]
+        result["anytime_td"] = {
+            "n_resolved": int(len(anytime_td)),
+            "n_called": int(len(called)),
+            "hit_rate_when_called": float(called["actual_value"].mean()) if not called.empty else None,
+            "brier_score": float(((anytime_td["predicted_value"] - anytime_td["actual_value"]) ** 2).mean()),
+        }
+
+    for market in _YARDAGE_MARKETS:
+        rows = resolved[resolved["market"] == market]
+        if rows.empty:
+            result[market] = {"n_resolved": 0, "mean_absolute_error": None}
+        else:
+            result[market] = {
+                "n_resolved": int(len(rows)),
+                "mean_absolute_error": float((rows["predicted_value"] - rows["actual_value"]).abs().mean()),
+            }
+    return result
 
 
 def get_game_verdict(game_id: str) -> dict | None:

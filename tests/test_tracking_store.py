@@ -64,8 +64,8 @@ def test_reconcile_game_predictions_fills_actual_outcome():
     n = store.reconcile_game_predictions(results)
 
     assert n == 1
-    record = store.get_track_record()
-    assert record["n_resolved_games"] == 1
+    record = store.get_track_record()["games"]
+    assert record["n_resolved"] == 1
     assert record["pct_moneyline_correct"] == 1.0  # predicted away win, away won
 
 

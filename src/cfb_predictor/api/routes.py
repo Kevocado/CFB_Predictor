@@ -459,9 +459,22 @@ def retrain():
     return {"trained_at": result["trained_at"], "chosen_candidate": result["chosen_candidate"]}
 
 
+def _attach_game_id(stats_df: pd.DataFrame, games_df: pd.DataFrame) -> pd.DataFrame:
+    """Join weekly player stats to the game_id of the game each row's
+    player actually played in, matched by season/week/team -- weekly
+    stats carry a team and week but no game_id of their own."""
+    if stats_df.empty or games_df.empty:
+        return stats_df.iloc[0:0]
+    home = games_df[["game_id", "season", "week", "home_team"]].rename(columns={"home_team": "recent_team"})
+    away = games_df[["game_id", "season", "week", "away_team"]].rename(columns={"away_team": "recent_team"})
+    team_game = pd.concat([home, away], ignore_index=True)
+    return stats_df.merge(team_game, on=["season", "week", "recent_team"], how="inner")
+
+
 def background_tracking_tick(season: int, week: int) -> None:
-    """Snapshot this week's upcoming-game predictions, then reconcile
-    anything now resolved. Called on a timer from api/main.py's lifespan."""
+    """Snapshot this week's upcoming-game (and player-prop) predictions,
+    then reconcile anything now resolved. Called on a timer from
+    api/main.py's lifespan."""
     try:
         models = _load_models_cached()
     except Exception as exc:
@@ -485,7 +498,7 @@ def background_tracking_tick(season: int, week: int) -> None:
                         "game_id": game["game_id"], "home_team": game["home_team"], "away_team": game["away_team"],
                         "commence_time": str(game["gameday"]),
                         "home_spread_line": spread_line, "total_line": total_line,
-                        "season": season,
+                        "season": season, "week": week,
                         **pred,
                     }
                 )
@@ -497,11 +510,44 @@ def background_tracking_tick(season: int, week: int) -> None:
         except Exception:
             logger.exception("record_game_predictions failed")
 
+        try:
+            team_to_game = {}
+            for _, g in games.iterrows():
+                team_to_game[g["home_team"]] = g["game_id"]
+                team_to_game[g["away_team"]] = g["game_id"]
+            prop_rows = []
+            for prop in _get_player_props_live(season, week):
+                game_id = team_to_game.get(prop["recent_team"])
+                if game_id is None:
+                    continue
+                prop_rows.append({
+                    "game_id": game_id, "player_id": prop["player_id"], "player_name": prop["player_name"],
+                    "market": "anytime_td", "predicted_value": prop["anytime_td_prob"],
+                })
+                for market in ("passing_yards", "rushing_yards", "receiving_yards"):
+                    value = prop.get(market)
+                    if value is not None:
+                        prop_rows.append({
+                            "game_id": game_id, "player_id": prop["player_id"], "player_name": prop["player_name"],
+                            "market": market, "predicted_value": value,
+                        })
+            store.record_player_prop_predictions(prop_rows)
+        except Exception:
+            logger.exception("player prop snapshot failed for season=%s week=%s", season, week)
+
     try:
         completed = games_data.fetch_current_season_partial()
         store.reconcile_game_predictions(completed[["game_id", "home_score", "away_score"]])
     except Exception:
         logger.exception("reconcile_game_predictions failed")
+        completed = pd.DataFrame()
+
+    try:
+        if not completed.empty:
+            actual_stats = player_stats.fetch_weekly_player_stats([season], completed)
+            store.reconcile_player_prop_predictions(_attach_game_id(actual_stats, completed))
+    except Exception:
+        logger.exception("player prop reconciliation failed")
 
     try:
         store.backfill_unresolved_games(games_data)
