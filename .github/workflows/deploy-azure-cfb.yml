@@ -48,7 +48,8 @@ jobs:
             --max-replicas 3 \
             --cpu 0.5 \
             --memory 1Gi \
-            --env-vars PYTHONPATH=/app/src PUBLIC_MODE=true \
+            --env-vars PYTHONPATH=/app/src PUBLIC_MODE=true ODDS_API_KEY=secretref:odds-api-key \
+            --secrets odds-api-key=${{ secrets.ODDS_API_KEY }} \
             --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || true
 
           az containerapp update \
@@ -57,4 +58,14 @@ jobs:
             --image ghcr.io/kevocado/cfb-predictor:${{ github.sha }} \
             --min-replicas 0 \
             --max-replicas 3 || true
+
+          az containerapp secret set \
+            --name cfb-predictor \
+            --resource-group predictor-hub-rg \
+            --secrets odds-api-key=${{ secrets.ODDS_API_KEY }}
+
+          az containerapp update \
+            --name cfb-predictor \
+            --resource-group predictor-hub-rg \
+            --set-env-vars ODDS_API_KEY=secretref:odds-api-key
           az containerapp ingress enable --name cfb-predictor --resource-group predictor-hub-rg --type external --target-port 8003 || true
