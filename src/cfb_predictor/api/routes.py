@@ -299,7 +299,7 @@ def get_games(season: int, week: int):
 
 
 def _get_games_live(season: int, week: int):
-    games = games_data.fetch_upcoming_games(season, week)
+    games = games_data.fetch_week_games(season, week)
     games = games.astype(object).where(pd.notna(games), None)
     return games.to_dict("records")
 
@@ -316,14 +316,19 @@ def get_game_prediction(season: int, week: int, game_id: str):
 
 
 def _get_game_prediction_live(season: int, week: int, game_id: str):
-    games = games_data.fetch_upcoming_games(season, week)
+    games = games_data.fetch_week_games(season, week)
     matches = games[games["game_id"] == game_id]
     if matches.empty:
         raise HTTPException(status_code=404, detail=f"Unknown game_id: {game_id}")
     game = matches.iloc[0]
 
     models = _load_models_or_503()
+    # Exclude the game's own row from its feature history -- fetch_week_games
+    # (unlike the old fetch_upcoming_games) makes already-finished games
+    # reachable here too, and without this exclusion a finished game's
+    # prediction would leak its own result into its own features.
     history = _load_game_history(season)
+    history = history[history["game_id"] != game_id]
     odds_df = odds_api.fetch_game_odds()
     spread_line, total_line = _lines_for_game(odds_df, game["home_team"], game["away_team"])
     prediction = _predict_game_from_models(

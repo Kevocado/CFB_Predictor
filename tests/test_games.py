@@ -91,6 +91,15 @@ def test_fetch_upcoming_games_filters_season_week(monkeypatch, tmp_path):
     assert list(upcoming["game_id"]) == ["401520200"]
 
 
+def test_fetch_week_games_includes_finished_and_upcoming(monkeypatch, tmp_path):
+    monkeypatch.setattr(games, "GAMES_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(games, "_import_games", lambda season: _raw_games_frame())
+
+    week_games = games.fetch_week_games(2025, 1)
+
+    assert set(week_games["game_id"]) == {"401520145", "401520200"}
+
+
 def test_fetch_fbs_teams_caches_and_returns_conference_and_division(monkeypatch, tmp_path):
     monkeypatch.setattr(games, "TEAMS_CACHE_DIR", tmp_path)
     calls = []

@@ -17,6 +17,14 @@ def client(monkeypatch):
         ),
     )
     monkeypatch.setattr(
+        routes.games_data, "fetch_week_games",
+        lambda season, week: pd.DataFrame(
+            [{"game_id": "401520145", "season": season, "week": week,
+              "gameday": "2025-08-30", "home_team": "Texas", "away_team": "Ohio State",
+              "home_score": None, "away_score": None}]
+        ),
+    )
+    monkeypatch.setattr(
         routes.games_data, "load_training_data",
         lambda seasons: pd.DataFrame(
             [{"game_id": "g0", "season": seasons[0], "week": 1, "gameday": "2025-08-01",
@@ -82,7 +90,7 @@ def test_get_game_verdict_404s_when_not_resolved(client, monkeypatch):
 
 def test_get_games_handles_nan_scores_for_unplayed_games(client, monkeypatch):
     monkeypatch.setattr(
-        routes.games_data, "fetch_upcoming_games",
+        routes.games_data, "fetch_week_games",
         lambda season, week: pd.DataFrame(
             [{"game_id": "401520145", "season": season, "week": week,
               "gameday": "2025-08-30", "home_team": "Texas", "away_team": "Ohio State",
@@ -96,6 +104,31 @@ def test_get_games_handles_nan_scores_for_unplayed_games(client, monkeypatch):
     body = response.json()
     assert body[0]["home_score"] is None
     assert body[0]["away_score"] is None
+
+
+def test_get_games_includes_finished_games(client, monkeypatch):
+    # A week with a mix of finished and still-upcoming games must return
+    # both -- fetch_upcoming_games alone would silently drop the finished
+    # one, which is exactly the bug this route must not have.
+    monkeypatch.setattr(
+        routes.games_data, "fetch_week_games",
+        lambda season, week: pd.DataFrame(
+            [
+                {"game_id": "401520145", "season": season, "week": week,
+                 "gameday": "2025-08-30", "home_team": "Texas", "away_team": "Ohio State",
+                 "home_score": 24, "away_score": 17},
+                {"game_id": "401520200", "season": season, "week": week,
+                 "gameday": "2025-08-30", "home_team": "Alabama", "away_team": "Western Carolina",
+                 "home_score": None, "away_score": None},
+            ]
+        ),
+    )
+
+    response = client.get("/api/games?season=2025&week=1")
+
+    assert response.status_code == 200
+    game_ids = {g["game_id"] for g in response.json()}
+    assert game_ids == {"401520145", "401520200"}
 
 
 def test_lines_for_game_reads_spreads_and_totals_from_odds_api():
