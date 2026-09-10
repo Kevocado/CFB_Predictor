@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shutil
 import traceback
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
-from ..config import PUBLIC_MODE, PUBLIC_SNAPSHOT_POLL_SECONDS
+from ..config import PUBLIC_MODE, PUBLIC_SNAPSHOT_POLL_SECONDS, TRACKING_DB_BACKUP_PATH, TRACKING_DB_PATH
 from .routes import (
     current_season_and_week,
     refresh_public_snapshot_from_remote,
@@ -25,10 +26,35 @@ logger = logging.getLogger(__name__)
 _TRACKING_INTERVAL_SECONDS = 3600
 
 
+def _restore_tracking_db() -> None:
+    """Copy the last known-good tracking db from the persistent cache
+    mount into place before anything opens it -- see
+    config.py::TRACKING_DB_BACKUP_PATH for why this is a file copy
+    instead of pointing the live db at the mount directly."""
+    if TRACKING_DB_BACKUP_PATH.exists() and not TRACKING_DB_PATH.exists():
+        try:
+            shutil.copy2(TRACKING_DB_BACKUP_PATH, TRACKING_DB_PATH)
+        except Exception:
+            logger.exception("tracking db restore failed")
+
+
+def _backup_tracking_db() -> None:
+    """Copy the live tracking db out to the persistent cache mount.
+    Safe to call right after a tick: every connection in tracking/store.py
+    is opened and closed per-call (contextlib.closing), so there's never
+    a connection left open on the local file at this point."""
+    if TRACKING_DB_PATH.exists():
+        try:
+            shutil.copy2(TRACKING_DB_PATH, TRACKING_DB_BACKUP_PATH)
+        except Exception:
+            logger.exception("tracking db backup failed")
+
+
 async def _run_tracking_tick():
     try:
         season, week = current_season_and_week()
         await asyncio.to_thread(background_tracking_tick, season, week)
+        await asyncio.to_thread(_backup_tracking_db)
     except Exception:
         logger.exception("background_tracking_tick failed")
 
@@ -56,6 +82,11 @@ async def _public_snapshot_poll_loop():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Restore the tracking db from its persistent backup BEFORE anything
+    # (including the first tracking tick, below) can touch it -- the live
+    # db is on local ephemeral disk, wiped by every cold start, otherwise.
+    _restore_tracking_db()
+
     # The public deployment serves games/predictions/player-props from
     # public_snapshot.py's precomputed file (see routes.py's PUBLIC_MODE
     # branches). The tracking loop still runs regardless -- it's what

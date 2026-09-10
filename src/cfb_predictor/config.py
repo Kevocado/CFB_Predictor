@@ -34,6 +34,19 @@ ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
 TRACKING_DB_PATH = DATA_DIR / "tracking.db"
 
+# SQLite doesn't work reliably over Azure Files/SMB (confirmed live:
+# "database is locked" the moment TRACKING_DB_PATH itself was pointed at
+# the mounted cache volume) -- so the live database still lives on local,
+# ephemeral container disk, wiped on every cold start (this app scales to
+# zero between requests). CACHE_DIR is the one directory that IS on a
+# persistent Azure Files mount (see the Container App's volume config).
+# api/main.py copies the live db here right after every tracking tick,
+# and restores from here at startup -- a plain file copy at a quiescent
+# point (no open connection at either end) sidesteps SQLite's own
+# locking model entirely, unlike trying to query the db directly over
+# the network share.
+TRACKING_DB_BACKUP_PATH = CACHE_DIR / "tracking_backup.db"
+
 # Precomputed games/predictions/player-props for a window of weeks, so the
 # public deployment never runs this project's live feature-building
 # pipeline (CFBD game/player-stat fetch, feature build, model predict) on
