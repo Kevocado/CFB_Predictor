@@ -28,7 +28,7 @@ from ..data import games as games_data
 from ..data import odds_api, player_stats
 from ..features import build as feature_build
 from ..features import player_usage
-from ..models import game_outcome, manifest, player_props
+from ..models import game_outcome, manifest, player_props, season_projection
 from ..odds import value_bets
 from ..tracking import store
 
@@ -248,11 +248,19 @@ def _predict_game_from_models(
 
     predicted_total = float(models["total_model"].predict(X.to_numpy().reshape(1, -1))[0])
 
-    return game_outcome.margin_to_probabilities(
+    result = game_outcome.margin_to_probabilities(
         predicted_margin, models["sigma"],
         spread_line=spread_line, total_line=total_line,
         predicted_total=predicted_total, total_sigma=models["total_sigma"],
     )
+    # Not part of the public API response shape, just handed straight to
+    # whichever caller wants it (season_projection.py sums this across a
+    # team's remaining games for a projected point differential) -- extra
+    # dict keys are harmless since this project doesn't validate the
+    # /prediction endpoint's response against a schema.
+    result["predicted_margin"] = predicted_margin
+    result["predicted_total"] = predicted_total
+    return result
 
 
 def _load_game_history(season: int) -> pd.DataFrame:
@@ -453,6 +461,32 @@ def get_predictions_for_week(season: int, week: int):
     finished = finished[finished["week"] == week]
     games = pd.concat([finished, upcoming], ignore_index=True).drop_duplicates(subset="game_id")
     return store.get_predictions_for_week(season, week, games)
+
+
+@router.get("/standings")
+def get_standings(season: int = CURRENT_SEASON):
+    if PUBLIC_MODE:
+        snap = _public_snapshot()
+        if snap.get("season") == season and "standings" in snap:
+            return snap["standings"]
+    return _get_standings_live(season)
+
+
+def _get_standings_live(season: int):
+    schedule = games_data.fetch_schedules([season], force_refresh=(season == CURRENT_SEASON))
+    played = schedule[schedule["home_score"].notna() & schedule["away_score"].notna()]
+    remaining = schedule[schedule["home_score"].isna()]
+
+    current_records = season_projection.compute_current_records(played)
+    team_conferences = season_projection.build_team_conferences(schedule)
+
+    models = _load_models_cached()
+    history = _load_game_history(season)
+
+    def predict_fn(home: str, away: str) -> dict:
+        return _predict_game_from_models(models, home, away, history)
+
+    return season_projection.project_standings(remaining, current_records, team_conferences, predict_fn)
 
 
 @router.post("/retrain")

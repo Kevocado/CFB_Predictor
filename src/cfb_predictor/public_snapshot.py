@@ -72,6 +72,13 @@ def build_snapshot(previous: dict | None = None) -> dict:
         else:
             weeks[key] = previous_weeks[key]
 
+    print("Building season standings projection (this predicts every remaining FBS game -- slow)...")
+    try:
+        standings = routes._get_standings_live(season)
+    except Exception as exc:
+        print(f"  ! skipped standings: {exc}")
+        standings = previous.get("standings", []) if previous.get("season") == season else []
+
     import pandas as pd
 
     return {
@@ -79,6 +86,7 @@ def build_snapshot(previous: dict | None = None) -> dict:
         "season": season,
         "current_week": current_week,
         "weeks": weeks,
+        "standings": standings,
     }
 
 
