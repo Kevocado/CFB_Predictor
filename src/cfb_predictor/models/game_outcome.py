@@ -66,14 +66,18 @@ def margin_to_probabilities(
     spread_line follows the home team's expected margin (positive means home
     favored by that many points) -- the home team covers when
     margin > spread_line. total_points ~ Normal(predicted_total, total_sigma);
-    over_prob = P(total > total_line)."""
+    over_prob = P(total > total_line).
+    
+    If spread_line is not provided, uses the model's predicted_margin as the
+    spread line (model's expected margin)."""
     home_win_prob = float(1.0 - norm.cdf(0.0, loc=predicted_margin, scale=sigma))
     result = {"home_win_prob": home_win_prob, "away_win_prob": 1.0 - home_win_prob}
 
-    if spread_line is not None:
-        home_cover_prob = float(1.0 - norm.cdf(spread_line, loc=predicted_margin, scale=sigma))
-        result["home_cover_prob"] = home_cover_prob
-        result["away_cover_prob"] = 1.0 - home_cover_prob
+    # Use model's predicted margin as default spread if no odds provided
+    effective_spread = spread_line if spread_line is not None else predicted_margin
+    home_cover_prob = float(1.0 - norm.cdf(effective_spread, loc=predicted_margin, scale=sigma))
+    result["home_cover_prob"] = home_cover_prob
+    result["away_cover_prob"] = 1.0 - home_cover_prob
 
     if total_line is not None and predicted_total is not None and total_sigma is not None:
         over_prob = float(1.0 - norm.cdf(total_line, loc=predicted_total, scale=total_sigma))
