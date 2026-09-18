@@ -52,6 +52,7 @@ jobs:
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SPORTSBOOK_API_KEY: ${{ secrets.SPORTSBOOK_API_KEY }}
         run: python -m cfb_predictor.public_snapshot
 
       - name: Commit and push if changed
