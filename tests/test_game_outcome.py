@@ -88,3 +88,14 @@ def test_margin_to_probabilities_spread_line_uses_home_expected_margin_conventio
     )
 
     assert result["home_cover_prob"] < 0.5
+
+
+def test_margin_to_probabilities_omits_cover_prob_without_a_real_spread_line():
+    # No spread_line supplied (e.g. the Odds API had nothing for this
+    # game) -- must NOT fabricate a fake 50/50 cover market by using the
+    # model's own predicted_margin as a stand-in line, which is
+    # mathematically guaranteed to always come out exactly 0.5.
+    result = game_outcome.margin_to_probabilities(predicted_margin=17.0, sigma=13.0)
+
+    assert result["home_cover_prob"] is None
+    assert result["away_cover_prob"] is None
