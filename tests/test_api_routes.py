@@ -31,7 +31,14 @@ def client(monkeypatch):
               "home_team": "Texas", "away_team": "Ohio State", "home_score": 24, "away_score": 17}]
         ),
     )
-    monkeypatch.setattr(routes.odds_api, "fetch_game_odds", lambda: pd.DataFrame())
+    monkeypatch.setattr(routes.sportsbook_api, "fetch_game_odds", lambda *a, **k: pd.DataFrame())
+    # _get_game_prediction_live only bothers fetching odds for the actual
+    # current week (see its own docstring) -- pin this away from any
+    # season/week a test might use so it deterministically takes the skip
+    # branch instead of calling the real current_season_and_week(), which
+    # would otherwise hit games_data.fetch_schedules for real (network/
+    # cache dependent, not what this fixture's mocks are for).
+    monkeypatch.setattr(routes, "current_season_and_week", lambda: (9999, 99))
     monkeypatch.setattr(
         routes, "_load_models_cached",
         lambda: {

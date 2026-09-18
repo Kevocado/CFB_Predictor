@@ -2,8 +2,8 @@
 over data/features/models/tracking, near-verbatim port of nfl_predictor's
 own api/routes.py. Two CFB-specific adaptations: (1) schedules -> games
 (data.games); (2) CFBD's Game model carries no spread_line/total_line, so
-_lines_for_game pulls them from The Odds API's own spreads/totals markets
-instead, matched by team name.
+_lines_for_game pulls them from data/sportsbook_api.py's own spreads/totals
+markets instead, matched by team name.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from ..config import (
     PUBLIC_SNAPSHOT_REFRESH_URL,
 )
 from ..data import games as games_data
-from ..data import odds_api, player_stats
+from ..data import player_stats, sportsbook_api
 from ..features import build as feature_build
 from ..features import player_usage
 from ..models import game_outcome, manifest, player_props, season_projection
@@ -170,12 +170,14 @@ def _load_models_or_503() -> dict:
 
 def _team_name_matches(cfbd_name: str, odds_name: str) -> bool:
     """Best-effort match between CFBD's short school name (e.g. "Texas")
-    and The Odds API's full team name (e.g. "Texas Longhorns") -- these
-    are different naming conventions with no shared id space. Matches
-    when the CFBD name's words are a prefix of the Odds API name's words
-    (case-insensitive), which covers the common case without a full
-    manual mapping table. Real gap acknowledged in the plan/ledger: this
-    will still miss genuinely divergent names (e.g. abbreviations,
+    and the odds provider's own team name (e.g. "Texas Longhorns" from The
+    Odds API, or "Texas" from data/sportsbook_api.py -- close enough to
+    CFBD's own naming that this rarely needs its full tolerance for that
+    source) -- these are different naming conventions with no shared id
+    space. Matches when the CFBD name's words are a prefix of the odds
+    name's words (case-insensitive), which covers the common case without
+    a full manual mapping table. Real gap acknowledged in the plan/ledger:
+    this will still miss genuinely divergent names (e.g. abbreviations,
     "St." vs "State") -- degrades gracefully to no line found, same as
     a missing key or empty odds_df already does."""
     cfbd_words = cfbd_name.lower().split()
@@ -185,11 +187,13 @@ def _team_name_matches(cfbd_name: str, odds_name: str) -> bool:
 
 def _lines_for_game(odds_df: pd.DataFrame, home_team: str, away_team: str) -> tuple[float | None, float | None]:
     """CFBD's Game model (unlike nflverse's schedule frame) carries no
-    market spread/total -- pull them from The Odds API's own spreads/totals
-    markets instead, matched by team name (best-effort -- see
-    _team_name_matches). Best-effort: returns (None, None) for either line
-    the odds feed doesn't have for this matchup (a common case outside
-    Power-conference games, per the design spec)."""
+    market spread/total -- pull them from data/sportsbook_api.py's own
+    spreads/totals markets instead (odds_df's shape is provider-agnostic;
+    data/odds_api.py, the previous source, produces the exact same shape),
+    matched by team name (best-effort -- see _team_name_matches).
+    Best-effort: returns (None, None) for either line the odds feed
+    doesn't have for this matchup (a common case outside Power-conference
+    games, per the design spec)."""
     if odds_df is None or odds_df.empty:
         return None, None
     matches = odds_df[
@@ -215,11 +219,13 @@ def _lines_for_game(odds_df: pd.DataFrame, home_team: str, away_team: str) -> tu
         & matches["outcome_name"].map(lambda t: _team_name_matches(home_team, t))
     ]
     if not spread_rows.empty:
-        # The Odds API's `point` is the raw handicap (negative when the home
-        # team is favored). Negate it so spread_line means "home expected
-        # margin" -- the same convention nflverse uses and that
-        # game_outcome.margin_to_probabilities documents and is pinned
-        # against (see this plan's final review, finding B2).
+        # odds_df's `point` is the raw handicap (negative when the home
+        # team is favored) regardless of provider -- confirmed against real
+        # data/sportsbook_api.py data too (e.g. a -4.5 favorite). Negate it
+        # so spread_line means "home expected margin" -- the same
+        # convention nflverse uses and that game_outcome.margin_to_probabilities
+        # documents and is pinned against (see this plan's final review,
+        # finding B2).
         spread_line = -float(spread_rows.iloc[0]["point"])
 
     total_line = None
@@ -337,7 +343,17 @@ def _get_game_prediction_live(season: int, week: int, game_id: str):
     # prediction would leak its own result into its own features.
     history = _load_game_history(season)
     history = history[history["game_id"] != game_id]
-    odds_df = odds_api.fetch_game_odds()
+    # Only ever fetch real odds for the actual current week -- sportsbooks
+    # don't post real lines many weeks out anyway (confirmed live: a game
+    # 4 months away came back with zero priced markets), and this function
+    # is called once per game across public_snapshot.py's whole multi-week
+    # rebuild window (~350 games/run) -- fetching odds for every one of
+    # those would be ~350 Sportsbook API requests against its 150/day cap,
+    # in a single snapshot run alone.
+    if (season, week) == current_season_and_week():
+        odds_df = sportsbook_api.fetch_game_odds(matches[["home_team", "away_team"]])
+    else:
+        odds_df = pd.DataFrame()
     spread_line, total_line = _lines_for_game(odds_df, game["home_team"], game["away_team"])
     prediction = _predict_game_from_models(
         models, game["home_team"], game["away_team"], history,
@@ -523,7 +539,7 @@ def background_tracking_tick(season: int, week: int) -> None:
     games = games_data.fetch_upcoming_games(season, week)
     if not games.empty:
         history = _load_game_history(season)
-        odds_df = odds_api.fetch_game_odds()
+        odds_df = sportsbook_api.fetch_game_odds(games[["home_team", "away_team"]])
         predictions = []
         for _, game in games.iterrows():
             try:
@@ -593,7 +609,14 @@ def background_tracking_tick(season: int, week: int) -> None:
             if untracked_ids:
                 models = _load_models_cached()
                 history_all = _load_game_history(season)
-                odds_df = odds_api.fetch_game_odds()
+                # No odds fetch here (unlike the two live/upcoming call
+                # sites): backfill can touch an unpredictable, potentially
+                # large batch of already-finished games at once (e.g. after
+                # the tracker was down for a while), and a real spread
+                # line matters far less for games that already happened --
+                # ATS backfill just comes back unset (None), same as any
+                # other genuinely-no-line game.
+                odds_df = pd.DataFrame()
                 backfill_games = []
                 for _, game in completed[completed["game_id"].isin(untracked_ids)].iterrows():
                     try:

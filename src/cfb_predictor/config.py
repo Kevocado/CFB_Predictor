@@ -32,6 +32,22 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 ODDS_API_SPORT_KEY = "americanfootball_ncaaf"
 ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
+# RapidAPI's Sportsbook API (data/sportsbook_api.py) -- the live-odds
+# pipeline's primary source since 2026-09, same switch PL_Predictor made
+# and for the same reason: The Odds API's shared key (used across several
+# of this account's projects) confirmed live at 500/500 credits used, 0
+# remaining. This key comes from a completely separate provider/quota
+# (150 requests/day, one request per event -- no bulk/batch odds endpoint
+# exists). CFB has far more games per week than NFL/PL, so caching is
+# load-bearing here, not just a latency optimization -- see
+# SPORTSBOOK_CACHE_TTL_SECONDS.
+SPORTSBOOK_API_KEY = os.getenv("SPORTSBOOK_API_KEY")
+SPORTSBOOK_API_HOST = "sportsbook-api2.p.rapidapi.com"
+SPORTSBOOK_API_BASE_URL = f"https://{SPORTSBOOK_API_HOST}/v0"
+SPORTSBOOK_NCAAF_COMPETITION_KEY = "ei8e-xitw-a3B6"  # ncaa-football, from GET /v0/competitions
+SPORTSBOOK_CACHE_DIR = CACHE_DIR / "sportsbook"
+SPORTSBOOK_CACHE_TTL_SECONDS = 2 * 3600
+
 TRACKING_DB_PATH = DATA_DIR / "tracking.db"
 
 # SQLite doesn't work reliably over Azure Files/SMB (confirmed live:
@@ -74,5 +90,6 @@ for _d in (
     PLAYER_STATS_CACHE_DIR,
     ODDS_CACHE_DIR,
     ROSTER_CACHE_DIR,
+    SPORTSBOOK_CACHE_DIR,
 ):
     _d.mkdir(parents=True, exist_ok=True)

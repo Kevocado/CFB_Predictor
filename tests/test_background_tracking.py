@@ -20,7 +20,7 @@ def test_background_tracking_tick_records_and_reconciles(monkeypatch):
               "home_team": "Texas", "away_team": "Ohio State", "home_score": 24, "away_score": 17}]
         ),
     )
-    monkeypatch.setattr(routes.odds_api, "fetch_game_odds", lambda: pd.DataFrame())
+    monkeypatch.setattr(routes.sportsbook_api, "fetch_game_odds", lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(routes, "_load_models_cached", lambda: {
         "game_outcome_model": None, "chosen_candidate": "elo", "sigma": 12.0, "total_sigma": 10.0,
         "total_model": None, "player_models": {"feature_cols": [], "anytime_td": None},
