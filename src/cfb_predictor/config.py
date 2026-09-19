@@ -46,7 +46,16 @@ SPORTSBOOK_API_HOST = "sportsbook-api2.p.rapidapi.com"
 SPORTSBOOK_API_BASE_URL = f"https://{SPORTSBOOK_API_HOST}/v0"
 SPORTSBOOK_NCAAF_COMPETITION_KEY = "ei8e-xitw-a3B6"  # ncaa-football, from GET /v0/competitions
 SPORTSBOOK_CACHE_DIR = CACHE_DIR / "sportsbook"
-SPORTSBOOK_CACHE_TTL_SECONDS = 2 * 3600
+# Must stay well above refresh-public-snapshot.yml's own cron interval (4h).
+# A TTL shorter than the cron gap (the old 2h value) guarantees every single
+# scheduled run finds a stale cache and re-fetches all ~65 current-week
+# events from scratch -- confirmed live: that alone burns the shared
+# 150/day cap before the day's other runs (or other projects sharing this
+# key, e.g. PL_Predictor's own much more frequent but much better-cached
+# polling) get anything, leaving spreads permanently null. 20h means only
+# the day's first run actually spends quota; every later run that same day
+# reuses it.
+SPORTSBOOK_CACHE_TTL_SECONDS = 20 * 3600
 
 TRACKING_DB_PATH = DATA_DIR / "tracking.db"
 

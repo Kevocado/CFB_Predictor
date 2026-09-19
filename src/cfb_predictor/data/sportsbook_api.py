@@ -23,9 +23,12 @@ market *keys* attached but never outcomes/prices. CFB has far more games
 per week (60-70+) than NFL/PL, against the same confirmed 150/day cap
 (the x-ratelimit-requests-limit response header) -- both event-list and
 per-event responses are cached to disk per SPORTSBOOK_CACHE_TTL_SECONDS
-(2h), and only games actually being predicted right now ever get their
-odds fetched (never the whole season at once), which is what keeps this
-inside budget.
+(20h, well above refresh-public-snapshot.yml's 4h cron gap -- a shorter
+TTL guarantees every scheduled run re-fetches from scratch instead of
+reusing the prior run's cache, confirmed live to blow the daily cap on
+its own before spreads ever populate), and only games actually being
+predicted right now ever get their odds fetched (never the whole season
+at once), which is what keeps this inside budget.
 """
 
 from __future__ import annotations
