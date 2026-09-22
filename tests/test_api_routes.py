@@ -66,6 +66,31 @@ def test_get_games_returns_week_slate(client):
     assert body[0]["game_id"] == "401520145"
 
 
+def test_get_games_attaches_real_spread_and_total_for_the_current_week(client, monkeypatch):
+    # CFBD's Game model carries no spread_line/total_line of its own (see
+    # routes.py's module docstring) -- the frontend's list-view GameCard
+    # reads game.spread_line directly (the same field NFL's own /games rows
+    # already carry), so without this the CFB games list never has
+    # anything to show even once sportsbook_api returns a real line.
+    monkeypatch.setattr(routes, "current_season_and_week", lambda: (2025, 1))
+    monkeypatch.setattr(
+        routes.sportsbook_api, "fetch_game_odds",
+        lambda *a, **k: pd.DataFrame([
+            {"home_team": "Texas", "away_team": "Ohio State", "market": "spreads",
+             "outcome_name": "Texas", "point": -4.5},
+            {"home_team": "Texas", "away_team": "Ohio State", "market": "totals",
+             "outcome_name": "Over", "point": 48.5},
+        ]),
+    )
+
+    response = client.get("/api/games?season=2025&week=1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["spread_line"] == 4.5
+    assert body[0]["total_line"] == 48.5
+
+
 def test_get_game_prediction(client):
     response = client.get("/api/games/2025/1/401520145/prediction")
 

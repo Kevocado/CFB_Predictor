@@ -315,7 +315,27 @@ def get_games(season: int, week: int):
 def _get_games_live(season: int, week: int):
     games = games_data.fetch_week_games(season, week)
     games = games.astype(object).where(pd.notna(games), None)
-    return games.to_dict("records")
+    records = games.to_dict("records")
+
+    # CFBD's Game model carries no spread_line/total_line (see module
+    # docstring), unlike nfl_data_py's schedule rows -- without this, the
+    # frontend's list-view GameCard (which reads game.spread_line directly,
+    # the same field NFL's /games rows already have) never has anything to
+    # show, even once a real market line exists via
+    # _get_game_prediction_live's per-game fetch. Only for the current week,
+    # same quota-safety gate as everywhere else this project calls
+    # sportsbook_api -- and doing it once here for the whole week (instead
+    # of once per game) is what /prediction's later per-game calls then
+    # reuse from sportsbook_api's own on-disk cache, at no extra request
+    # cost.
+    if records and (season, week) == current_season_and_week():
+        odds_df = sportsbook_api.fetch_game_odds(games[["home_team", "away_team"]])
+        for record in records:
+            spread_line, total_line = _lines_for_game(odds_df, record["home_team"], record["away_team"])
+            record["spread_line"] = spread_line
+            record["total_line"] = total_line
+
+    return records
 
 
 @router.get("/games/{season}/{week}/{game_id}/prediction")
