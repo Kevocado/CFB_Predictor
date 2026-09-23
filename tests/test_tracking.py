@@ -142,6 +142,22 @@ def test_get_game_verdict_summarizes_all_three_markets():
     assert verdict["moneyline"]["hit"] is True
     assert verdict["ats"]["predicted"] == "home_cover"
     assert verdict["totals"] is not None
+    assert verdict["actual_home_score"] == 30
+    assert verdict["actual_away_score"] == 20
+    assert verdict["home_spread_line"] == -3.5
+    assert verdict["total_line"] == 51.5
+
+
+def test_get_game_verdict_reports_null_lines_when_never_recorded():
+    store.record_game_predictions([_future_game(home_spread_line=None, total_line=None)])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+
+    verdict = store.get_game_verdict("g1")
+
+    assert verdict["home_spread_line"] is None
+    assert verdict["total_line"] is None
+    assert verdict["actual_home_score"] == 30
+    assert verdict["actual_away_score"] == 20
 
 
 def test_get_predictions_for_week_returns_pending_for_unresolved_and_verdict_for_resolved():

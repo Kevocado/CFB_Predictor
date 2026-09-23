@@ -99,6 +99,29 @@ def test_get_game_prediction(client):
     assert body["home_win_prob"] == 0.4
 
 
+def test_predict_game_from_models_includes_sigma_and_total_sigma(monkeypatch):
+    class _FakeTotalModel:
+        def predict(self, _X):
+            return [45.0]
+
+    monkeypatch.setattr(
+        routes.feature_build, "build_features_for_game",
+        lambda home, away, games_df: pd.Series({"rating_diff": 50.0, "home_rest_days": 7.0, "away_rest_days": 7.0}),
+    )
+    models = {
+        "feature_cols": ["rating_diff", "home_rest_days", "away_rest_days"],
+        "chosen_candidate": "elo", "sigma": 12.0, "total_sigma": 10.0,
+        "total_model": _FakeTotalModel(),
+    }
+
+    result = routes._predict_game_from_models(models, "Texas", "Oklahoma", pd.DataFrame())
+
+    assert result["sigma"] == 12.0
+    assert result["total_sigma"] == 10.0
+    assert "predicted_margin" in result
+    assert "predicted_total" in result
+
+
 def test_get_game_prediction_404s_for_unknown_game(client):
     response = client.get("/api/games/2025/1/nonexistent/prediction")
 

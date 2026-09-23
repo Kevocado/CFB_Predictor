@@ -266,6 +266,8 @@ def _predict_game_from_models(
     # /prediction endpoint's response against a schema.
     result["predicted_margin"] = predicted_margin
     result["predicted_total"] = predicted_total
+    result["sigma"] = models["sigma"]
+    result["total_sigma"] = models["total_sigma"]
     return result
 
 

@@ -339,6 +339,10 @@ def get_game_verdict(game_id: str) -> dict | None:
         },
         "ats": None,
         "totals": None,
+        "actual_home_score": int(row["actual_home_score"]),
+        "actual_away_score": int(row["actual_away_score"]),
+        "home_spread_line": float(row["home_spread_line"]) if pd.notna(row["home_spread_line"]) else None,
+        "total_line": float(row["total_line"]) if pd.notna(row["total_line"]) else None,
     }
     if pd.notna(row["ats_hit"]):
         predicted_home_cover = (row["home_cover_prob"] or 0) >= (row["away_cover_prob"] or 0)
