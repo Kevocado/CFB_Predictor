@@ -384,6 +384,57 @@ def _get_game_prediction_live(season: int, week: int, game_id: str):
     return prediction
 
 
+@router.get("/predictions/{season}/{week}/batch")
+def get_predictions_batch(season: int, week: int):
+    """Bare dict[game_id, GamePrediction] for the whole week -- a distinct
+    path from GET /predictions/{season}/{week} (which already returns a
+    different shape: a list of {game_id, status, verdict} tracking
+    objects). Lets the frontend preload every game's prediction in one
+    request instead of one request per game."""
+    if PUBLIC_MODE:
+        snap = _snapshot_week(season, week)
+        if snap is not None:
+            return snap["predictions"]
+    return _get_predictions_batch_live(season, week)
+
+
+def _get_predictions_batch_live(season: int, week: int) -> dict:
+    games = games_data.fetch_week_games(season, week)
+    if games.empty:
+        return {}
+
+    models = _load_models_or_503()
+    history = _load_game_history(season)
+
+    # Fetch odds ONCE for the whole week, not once per game inside the loop
+    # below -- CFB's Sportsbook API has a hard 150 requests/day quota
+    # shared across projects (already a source of real incidents this
+    # session), same reasoning and same pattern as _get_games_live above.
+    if (season, week) == current_season_and_week():
+        odds_df = sportsbook_api.fetch_game_odds(games[["home_team", "away_team"]])
+    else:
+        odds_df = pd.DataFrame()
+
+    predictions: dict[str, dict] = {}
+    for _, game in games.iterrows():
+        try:
+            # Exclude the game's own row from its feature history, same as
+            # _get_game_prediction_live -- otherwise a finished game's
+            # prediction leaks its own result into its own features.
+            game_history = history[history["game_id"] != game["game_id"]]
+            spread_line, total_line = _lines_for_game(odds_df, game["home_team"], game["away_team"])
+            predictions[game["game_id"]] = _predict_game_from_models(
+                models, game["home_team"], game["away_team"], game_history,
+                spread_line=spread_line, total_line=total_line,
+            )
+        except Exception:
+            # One bad game must not fail the whole batch -- mirrors
+            # public_snapshot.py's _build_week discipline exactly.
+            logger.exception("batch prediction failed for game_id=%s", game.get("game_id"))
+            continue
+    return predictions
+
+
 @router.get("/players/{season}/{week}/props")
 def get_player_props(season: int, week: int):
     if PUBLIC_MODE:

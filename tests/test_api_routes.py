@@ -343,6 +343,68 @@ def test_player_stats_needs_refresh_when_no_cache_exists_yet(monkeypatch, tmp_pa
     assert routes._player_stats_needs_refresh(2026, _games_df_with_final_scores()) is True
 
 
+def test_get_predictions_batch_returns_dict_keyed_by_game_id(client):
+    response = client.get("/api/predictions/2025/1/batch")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, dict)
+    assert body["401520145"]["home_win_prob"] == 0.4
+
+
+def test_get_predictions_batch_fetches_odds_once_for_the_whole_week(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.games_data, "fetch_week_games",
+        lambda season, week: pd.DataFrame([
+            {"game_id": "g1", "season": season, "week": week, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": None, "away_score": None},
+            {"game_id": "g2", "season": season, "week": week, "gameday": "2025-08-30",
+             "home_team": "Alabama", "away_team": "Georgia", "home_score": None, "away_score": None},
+        ]),
+    )
+    monkeypatch.setattr(routes, "current_season_and_week", lambda: (2025, 1))
+    calls = []
+    monkeypatch.setattr(
+        routes.sportsbook_api, "fetch_game_odds",
+        lambda *a, **k: (calls.append(1), pd.DataFrame())[1],
+    )
+
+    response = client.get("/api/predictions/2025/1/batch")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"g1", "g2"}
+    # Exactly one call for the whole week's games, never once per game --
+    # CFB's Sportsbook API quota is a hard 150/day cap shared across
+    # projects.
+    assert len(calls) == 1
+
+
+def test_get_predictions_batch_one_bad_game_does_not_fail_the_rest(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.games_data, "fetch_week_games",
+        lambda season, week: pd.DataFrame([
+            {"game_id": "good", "season": season, "week": week, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": None, "away_score": None},
+            {"game_id": "bad", "season": season, "week": week, "gameday": "2025-08-30",
+             "home_team": "Broken", "away_team": "Team", "home_score": None, "away_score": None},
+        ]),
+    )
+
+    def flaky_predict(models, home, away, games_df, spread_line=None, total_line=None):
+        if home == "Broken":
+            raise ValueError("feature build blew up for this one game")
+        return {"home_win_prob": 0.4, "away_win_prob": 0.6}
+
+    monkeypatch.setattr(routes, "_predict_game_from_models", flaky_predict)
+
+    response = client.get("/api/predictions/2025/1/batch")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"good"}
+
+
 def test_get_predictions_for_week_returns_list_of_predictions(client, monkeypatch):
     monkeypatch.setattr(
         routes.store, "get_predictions_for_week",
