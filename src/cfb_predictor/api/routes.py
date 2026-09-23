@@ -624,6 +624,87 @@ def _get_power_rankings_live(season: int) -> dict:
     return {"season": season, "rankings": rows}
 
 
+@router.get("/teams/{team}/form")
+def get_team_form(team: str, season: int = CURRENT_SEASON, n: int = 5):
+    history = _load_game_history(season)
+    return _team_form(team, history, n)
+
+
+def _team_form(team: str, history: pd.DataFrame, n: int) -> dict:
+    """Last n played games' W/L/T + score for `team`, oldest-to-newest --
+    pure filter/reshape of the multi-season history every other endpoint
+    already loads via _load_game_history, no new data fetch."""
+    involved = history[
+        ((history["home_team"] == team) | (history["away_team"] == team))
+        & history["home_score"].notna() & history["away_score"].notna()
+    ].sort_values("gameday")
+    recent = involved.tail(n)
+
+    rows = []
+    for _, g in recent.iterrows():
+        is_home = g["home_team"] == team
+        team_score = g["home_score"] if is_home else g["away_score"]
+        opponent_score = g["away_score"] if is_home else g["home_score"]
+        opponent = g["away_team"] if is_home else g["home_team"]
+        result = "W" if team_score > opponent_score else "L" if team_score < opponent_score else "T"
+        rows.append({
+            "game_id": g["game_id"],
+            "opponent": opponent,
+            "is_home": bool(is_home),
+            "result": result,
+            "team_score": int(team_score),
+            "opponent_score": int(opponent_score),
+            "gameday": str(g["gameday"]),
+        })
+    return {"team": team, "recent_form": rows}
+
+
+@router.get("/games/{game_id}/head-to-head")
+def get_head_to_head(game_id: str, season: int = CURRENT_SEASON, week: int = 1, n_seasons: int = 8):
+    return _get_head_to_head_live(game_id, season, week, n_seasons)
+
+
+def _get_head_to_head_live(game_id: str, season: int, week: int, n_seasons: int) -> dict:
+    """Meetings between game_id's two teams across the last n_seasons --
+    resolves the two teams from the given season/week's slate, then filters
+    the same multi-season history _load_game_history already loads for
+    every other endpoint (no new data fetch)."""
+    games = games_data.fetch_week_games(season, week)
+    matches = games[games["game_id"] == game_id]
+    if matches.empty:
+        raise HTTPException(status_code=404, detail=f"Unknown game_id: {game_id}")
+    game = matches.iloc[0]
+    home, away = game["home_team"], game["away_team"]
+
+    history = _load_game_history(season)
+    min_season = season - n_seasons + 1
+    history = history[history["season"] >= min_season]
+
+    pair_mask = (
+        ((history["home_team"] == home) & (history["away_team"] == away))
+        | ((history["home_team"] == away) & (history["away_team"] == home))
+    )
+    meetings_df = history[
+        pair_mask
+        & history["home_score"].notna() & history["away_score"].notna()
+        & (history["game_id"] != game_id)
+    ].sort_values("gameday")
+
+    meetings = [
+        {
+            "game_id": g["game_id"],
+            "season": int(g["season"]),
+            "gameday": str(g["gameday"]),
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "home_score": int(g["home_score"]),
+            "away_score": int(g["away_score"]),
+        }
+        for _, g in meetings_df.iterrows()
+    ]
+    return {"game_id": game_id, "meetings": meetings}
+
+
 @router.post("/retrain")
 def retrain():
     if PUBLIC_MODE:

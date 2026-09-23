@@ -343,6 +343,83 @@ def test_player_stats_needs_refresh_when_no_cache_exists_yet(monkeypatch, tmp_pa
     assert routes._player_stats_needs_refresh(2026, _games_df_with_final_scores()) is True
 
 
+def test_get_team_form_returns_last_n_games_with_result(client, monkeypatch):
+    monkeypatch.setattr(
+        routes, "_load_game_history",
+        lambda season: pd.DataFrame([
+            {"game_id": "g1", "season": season, "week": 1, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": 24, "away_score": 17},
+            {"game_id": "g2", "season": season, "week": 2, "gameday": "2025-09-06",
+             "home_team": "Oklahoma", "away_team": "Texas", "home_score": 30, "away_score": 10},
+            {"game_id": "g3", "season": season, "week": 3, "gameday": "2025-09-13",
+             "home_team": "Texas", "away_team": "Baylor", "home_score": 20, "away_score": 20},
+        ]),
+    )
+
+    response = client.get("/api/teams/Texas/form?season=2025&n=5")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["team"] == "Texas"
+    results = [g["result"] for g in body["recent_form"]]
+    assert results == ["W", "L", "T"]
+    assert body["recent_form"][1]["is_home"] is False
+    assert body["recent_form"][1]["opponent"] == "Oklahoma"
+
+
+def test_get_team_form_excludes_unplayed_games(client, monkeypatch):
+    monkeypatch.setattr(
+        routes, "_load_game_history",
+        lambda season: pd.DataFrame([
+            {"game_id": "g1", "season": season, "week": 1, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": 24, "away_score": 17},
+            {"game_id": "g2", "season": season, "week": 5, "gameday": "2025-10-04",
+             "home_team": "Texas", "away_team": "TCU", "home_score": None, "away_score": None},
+        ]),
+    )
+
+    response = client.get("/api/teams/Texas/form?season=2025")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["recent_form"]) == 1
+    assert body["recent_form"][0]["game_id"] == "g1"
+
+
+def test_get_head_to_head_returns_past_meetings_between_the_two_teams(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.games_data, "fetch_week_games",
+        lambda season, week: pd.DataFrame([
+            {"game_id": "current_game", "season": season, "week": week, "gameday": "2025-11-01",
+             "home_team": "Texas", "away_team": "Oklahoma", "home_score": None, "away_score": None},
+        ]),
+    )
+    monkeypatch.setattr(
+        routes, "_load_game_history",
+        lambda season: pd.DataFrame([
+            {"game_id": "past1", "season": season - 1, "week": 6, "gameday": "2024-10-12",
+             "home_team": "Oklahoma", "away_team": "Texas", "home_score": 10, "away_score": 34},
+            {"game_id": "unrelated", "season": season, "week": 3, "gameday": "2025-09-13",
+             "home_team": "Texas", "away_team": "Baylor", "home_score": 20, "away_score": 20},
+        ]),
+    )
+
+    response = client.get("/api/games/current_game/head-to-head?season=2025&week=9&n_seasons=8")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["game_id"] == "current_game"
+    assert len(body["meetings"]) == 1
+    assert body["meetings"][0]["game_id"] == "past1"
+    assert body["meetings"][0]["home_team"] == "Oklahoma"
+
+
+def test_get_head_to_head_404s_for_unknown_game_id(client):
+    response = client.get("/api/games/nonexistent/head-to-head?season=2025&week=1")
+
+    assert response.status_code == 404
+
+
 def test_get_predictions_batch_returns_dict_keyed_by_game_id(client):
     response = client.get("/api/predictions/2025/1/batch")
 
