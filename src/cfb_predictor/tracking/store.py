@@ -378,6 +378,8 @@ _MARKET_TO_STAT_COLUMN = {
     "passing_yards": "passing_yards",
     "rushing_yards": "rushing_yards",
     "receiving_yards": "receiving_yards",
+    "receptions": "receptions",
+    "carries": "carries",
 }
 
 

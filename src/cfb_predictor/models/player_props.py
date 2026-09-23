@@ -1,11 +1,17 @@
-"""player_props.py — anytime-TD classifier and per-position yardage
-regressors. Verbatim port from nfl_predictor: yardage props are priced as a
+"""player_props.py — anytime-TD classifier and per-position yardage/volume
+regressors. Verbatim port from nfl_predictor: props are priced as a
 continuous over/under line for both sports, and the fitting/prediction
-shape has no NFL-specific assumption. POSITION_YARDAGE_MARKET's four-way
-{QB, RB, WR, TE} mapping is kept as-is even though data/player_stats.py's
-CFBD-derived position inference can only ever emit QB/RB/WR (see that
-module's docstring) -- WR and TE already map to the same receiving_yards
-market, so the extra entry costs nothing and future-proofs this file.
+shape has no NFL-specific assumption. `manifest.py`'s train/save/load
+pipeline is entirely generic over YARDAGE_TARGETS's keys, so every entry
+here gets its own regressor with zero pipeline changes.
+
+`receptions` and `carries` are real data for CFB (unlike `targets`, which
+is structurally NaN for CFB -- see data/player_stats.py -- and must never
+get a market): `carries` was already a rolling feature
+(features/player_usage.py's ROLL_STATS) but not a priced market here until
+now; `receptions` is new on both counts. POSITION_MARKETS is a *separate*,
+inference-time-only dict used solely by predict_props to pick which
+market(s) apply to a given position.
 """
 
 from __future__ import annotations
@@ -17,9 +23,16 @@ YARDAGE_TARGETS = {
     "passing_yards": "passing_yards",
     "rushing_yards": "rushing_yards",
     "receiving_yards": "receiving_yards",
+    "carries": "carries",
+    "receptions": "receptions",
 }
 
-POSITION_YARDAGE_MARKET = {"QB": "passing_yards", "RB": "rushing_yards", "WR": "receiving_yards", "TE": "receiving_yards"}
+POSITION_MARKETS: dict[str, list[str]] = {
+    "QB": ["passing_yards"],
+    "RB": ["rushing_yards", "carries"],
+    "WR": ["receiving_yards", "receptions"],
+    "TE": ["receiving_yards", "receptions"],
+}
 
 
 def fit_anytime_td_classifier(X_train: pd.DataFrame, y_train: pd.Series) -> XGBClassifier:
@@ -43,8 +56,13 @@ def predict_props(models: dict, feature_row: pd.Series, position: str) -> dict:
 
     result = {"anytime_td_prob": float(models["anytime_td"].predict_proba(X)[0, 1])}
 
-    market = POSITION_YARDAGE_MARKET.get(position)
-    if market and market in models:
-        result[market] = float(models[market].predict(X)[0])
+    for market in POSITION_MARKETS.get(position, []):
+        # Gracefully skip a market not yet in the models dict -- this
+        # happens right after this code ships but before the next retrain
+        # actually produces a model for it (see manifest.py's train_all,
+        # which only saves a market's model when it had positive training
+        # rows).
+        if market in models:
+            result[market] = float(models[market].predict(X)[0])
 
     return result

@@ -105,8 +105,9 @@ def _infer_position(row: dict) -> str:
     one CFBD call per team per season, which the 1,000-calls/month budget
     can't absorb). WR and TE are indistinguishable from box-score stats
     alone and both collapse to "WR" -- see models/player_props.py's
-    POSITION_YARDAGE_MARKET, which already maps WR and TE to the same
-    receiving_yards market, so this collapse costs nothing downstream."""
+    POSITION_MARKETS, which already maps WR and TE to the same
+    receiving_yards/receptions markets, so this collapse costs nothing
+    downstream."""
     totals = {
         "QB": row.get("passing_yards") or 0.0,
         "RB": row.get("rushing_yards") or 0.0,

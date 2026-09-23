@@ -83,3 +83,63 @@ def test_predict_props_collapses_wr_and_te_to_the_same_receiving_market():
 
     assert "receiving_yards" in wr_result
     assert "receiving_yards" in te_result
+
+
+def test_predict_props_returns_both_markets_for_rb_when_both_models_present():
+    """RB gets two markets now -- rushing_yards AND carries -- not just one
+    (Phase 8's POSITION_MARKETS replaces the old one-market-per-position
+    POSITION_YARDAGE_MARKET dict)."""
+    df = _toy_player_frame()
+    td_model = player_props.fit_anytime_td_classifier(df[FEATURE_COLS], df["anytime_td"])
+    rushing_model = player_props.fit_yardage_regressor(df[FEATURE_COLS], df["rushing_yards"])
+    carries_model = player_props.fit_yardage_regressor(df[FEATURE_COLS], df["rushing_yards_roll"])
+    models = {
+        "anytime_td": td_model, "rushing_yards": rushing_model, "carries": carries_model,
+        "feature_cols": FEATURE_COLS,
+    }
+
+    result = player_props.predict_props(models, df[FEATURE_COLS].iloc[0], position="RB")
+
+    assert "rushing_yards" in result
+    assert "carries" in result
+    assert "passing_yards" not in result
+
+
+def test_predict_props_returns_receptions_for_wr_when_model_present():
+    df = _toy_player_frame()
+    td_model = player_props.fit_anytime_td_classifier(df[FEATURE_COLS], df["anytime_td"])
+    receiving_model = player_props.fit_yardage_regressor(df[FEATURE_COLS], df["receiving_yards"])
+    receptions_model = player_props.fit_yardage_regressor(df[FEATURE_COLS], df["receiving_yards_roll"])
+    models = {
+        "anytime_td": td_model, "receiving_yards": receiving_model, "receptions": receptions_model,
+        "feature_cols": FEATURE_COLS,
+    }
+
+    result = player_props.predict_props(models, df[FEATURE_COLS].iloc[0], position="WR")
+
+    assert "receiving_yards" in result
+    assert "receptions" in result
+
+
+def test_predict_props_gracefully_skips_a_market_not_yet_in_models():
+    """Right after this code ships but before the next retrain, `models`
+    won't have a "carries"/"receptions" entry yet -- predict_props must not
+    KeyError, it should just omit that market."""
+    df = _toy_player_frame()
+    td_model = player_props.fit_anytime_td_classifier(df[FEATURE_COLS], df["anytime_td"])
+    models = {"anytime_td": td_model, "feature_cols": FEATURE_COLS}
+
+    result = player_props.predict_props(models, df[FEATURE_COLS].iloc[0], position="RB")
+
+    assert "anytime_td_prob" in result
+    assert "rushing_yards" not in result
+    assert "carries" not in result
+
+
+def test_cfb_never_gets_a_targets_based_market():
+    """CFB's `targets` column is structurally NaN (data source gap) -- no
+    position may ever map to a targets-based market, unlike receptions and
+    carries which are real CFB data."""
+    for markets in player_props.POSITION_MARKETS.values():
+        assert "targets" not in markets
+    assert "targets" not in player_props.YARDAGE_TARGETS

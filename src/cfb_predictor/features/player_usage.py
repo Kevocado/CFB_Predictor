@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-ROLL_STATS = ["passing_yards", "rushing_yards", "receiving_yards", "targets", "carries"]
+ROLL_STATS = ["passing_yards", "rushing_yards", "receiving_yards", "targets", "carries", "receptions"]
 PLAYER_FEATURE_COLUMNS = [f"{stat}_roll" for stat in ROLL_STATS]
 
 
