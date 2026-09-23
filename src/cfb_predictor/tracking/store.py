@@ -70,6 +70,12 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    existing_prop_cols = {row[1] for row in conn.execute("PRAGMA table_info(player_prop_predictions)")}
+    if "position" not in existing_prop_cols:
+        # Phase 9: position enables the per-position MAE breakdown. Nullable
+        # so rows recorded before this migration keep working (they surface
+        # under "unknown" in the summary).
+        conn.execute("ALTER TABLE player_prop_predictions ADD COLUMN position TEXT")
     return conn
 
 
@@ -290,7 +296,20 @@ def _summarize_games(resolved: pd.DataFrame) -> dict:
     }
 
 
-_YARDAGE_MARKETS = ("passing_yards", "rushing_yards", "receiving_yards")
+_TD_CONFIDENCE_BUCKETS = (("50-60%", 0.50, 0.60), ("60-70%", 0.60, 0.70), ("70%+", 0.70, 1.01))
+
+
+def _td_confidence_buckets(anytime_td: pd.DataFrame) -> list[dict]:
+    """Hit rate per predicted-probability bucket for anytime-TD props."""
+    buckets = []
+    for label, lo, hi in _TD_CONFIDENCE_BUCKETS:
+        in_bucket = anytime_td[(anytime_td["predicted_value"] >= lo) & (anytime_td["predicted_value"] < hi)]
+        buckets.append({
+            "label": label,
+            "n": int(len(in_bucket)),
+            "hit_rate": float(in_bucket["actual_value"].mean()) if not in_bucket.empty else None,
+        })
+    return buckets
 
 
 def _summarize_player_props(resolved: pd.DataFrame) -> dict:
@@ -298,7 +317,10 @@ def _summarize_player_props(resolved: pd.DataFrame) -> dict:
 
     anytime_td = resolved[resolved["market"] == "anytime_td"]
     if anytime_td.empty:
-        result["anytime_td"] = {"n_resolved": 0, "hit_rate_when_called": None, "brier_score": None}
+        result["anytime_td"] = {
+            "n_resolved": 0, "hit_rate_when_called": None, "brier_score": None,
+            "confidence_buckets": _td_confidence_buckets(anytime_td),
+        }
     else:
         called = anytime_td[anytime_td["predicted_value"] >= 0.5]
         result["anytime_td"] = {
@@ -306,16 +328,28 @@ def _summarize_player_props(resolved: pd.DataFrame) -> dict:
             "n_called": int(len(called)),
             "hit_rate_when_called": float(called["actual_value"].mean()) if not called.empty else None,
             "brier_score": float(((anytime_td["predicted_value"] - anytime_td["actual_value"]) ** 2).mean()),
+            "confidence_buckets": _td_confidence_buckets(anytime_td),
         }
 
     for market in _YARDAGE_MARKETS:
         rows = resolved[resolved["market"] == market]
         if rows.empty:
-            result[market] = {"n_resolved": 0, "mean_absolute_error": None}
+            result[market] = {
+                "n_resolved": 0, "mean_absolute_error": None,
+                "mean_signed_error": None, "mae_by_position": {},
+            }
         else:
+            signed = rows["predicted_value"] - rows["actual_value"]
+            by_position = rows.assign(position=rows["position"].fillna("unknown")).groupby("position")
             result[market] = {
                 "n_resolved": int(len(rows)),
-                "mean_absolute_error": float((rows["predicted_value"] - rows["actual_value"]).abs().mean()),
+                "mean_absolute_error": float(signed.abs().mean()),
+                # Positive = systematic over-prediction, negative = under-prediction.
+                "mean_signed_error": float(signed.mean()),
+                "mae_by_position": {
+                    position: float((group["predicted_value"] - group["actual_value"]).abs().mean())
+                    for position, group in by_position
+                },
             }
     return result
 
@@ -358,15 +392,16 @@ def record_player_prop_predictions(props: list[dict]) -> int:
         return 0
     now = datetime.now(timezone.utc).isoformat()
     rows = [
-        (prop["game_id"], prop["player_id"], prop["player_name"], prop["market"], float(prop["predicted_value"]), now)
+        (prop["game_id"], prop["player_id"], prop["player_name"], prop["market"],
+         float(prop["predicted_value"]), prop.get("position"), now)
         for prop in props
     ]
     with contextlib.closing(_connect()) as conn, conn:
         cursor = conn.executemany(
             """
             INSERT OR IGNORE INTO player_prop_predictions
-                (game_id, player_id, player_name, market, predicted_value, snapshotted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (game_id, player_id, player_name, market, predicted_value, position, snapshotted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -381,6 +416,11 @@ _MARKET_TO_STAT_COLUMN = {
     "receptions": "receptions",
     "carries": "carries",
 }
+
+# Every market except anytime_td resolves against a stat column -- these are
+# the "yardage-style" markets in the track-record summary. Derived from
+# _MARKET_TO_STAT_COLUMN so adding a market only ever needs one edit.
+_YARDAGE_MARKETS = tuple(market for market, col in _MARKET_TO_STAT_COLUMN.items() if col is not None)
 
 
 def reconcile_player_prop_predictions(player_stats_df: pd.DataFrame) -> int:

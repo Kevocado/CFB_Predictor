@@ -778,6 +778,7 @@ def background_tracking_tick(season: int, week: int) -> None:
                 prop_rows.append({
                     "game_id": game_id, "player_id": prop["player_id"], "player_name": prop["player_name"],
                     "market": "anytime_td", "predicted_value": prop["anytime_td_prob"],
+                    "position": prop["position"],
                 })
                 for market in player_props.POSITION_MARKETS.get(prop["position"], []):
                     value = prop.get(market)
@@ -785,6 +786,7 @@ def background_tracking_tick(season: int, week: int) -> None:
                         prop_rows.append({
                             "game_id": game_id, "player_id": prop["player_id"], "player_name": prop["player_name"],
                             "market": market, "predicted_value": value,
+                            "position": prop["position"],
                         })
             store.record_player_prop_predictions(prop_rows)
         except Exception:

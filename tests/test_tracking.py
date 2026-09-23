@@ -175,3 +175,112 @@ def test_get_predictions_for_week_returns_pending_for_unresolved_and_verdict_for
     assert by_id["g1"]["verdict"]["moneyline"]["hit"] is True
     assert by_id["g2"]["status"] == "pending"
     assert by_id["g2"]["verdict"] is None
+
+
+def _prop(game_id="g1", player_id="p1", player_name="Test Player", market="passing_yards",
+          predicted_value=250.0, position="QB"):
+    return {"game_id": game_id, "player_id": player_id, "player_name": player_name,
+            "market": market, "predicted_value": predicted_value, "position": position}
+
+
+def test_track_record_buckets_anytime_td_predictions_by_confidence():
+    store.record_player_prop_predictions([
+        _prop(market="anytime_td", predicted_value=0.55, player_id="p1"),
+        _prop(market="anytime_td", predicted_value=0.65, player_id="p2"),
+        _prop(market="anytime_td", predicted_value=0.75, player_id="p3"),
+    ])
+    stats = pd.DataFrame([
+        {"game_id": "g1", "player_id": "p1", "rushing_tds": 1, "receiving_tds": 0, "passing_tds": 0},
+        {"game_id": "g1", "player_id": "p2", "rushing_tds": 0, "receiving_tds": 0, "passing_tds": 0},
+        {"game_id": "g1", "player_id": "p3", "rushing_tds": 0, "receiving_tds": 1, "passing_tds": 0},
+    ])
+    assert store.reconcile_player_prop_predictions(stats) == 3
+
+    buckets = {
+        b["label"]: b
+        for b in store.get_track_record()["player_props"]["anytime_td"]["confidence_buckets"]
+    }
+    assert buckets["50-60%"]["n"] == 1
+    assert buckets["50-60%"]["hit_rate"] == 1.0
+    assert buckets["60-70%"]["n"] == 1
+    assert buckets["60-70%"]["hit_rate"] == 0.0
+    assert buckets["70%+"]["n"] == 1
+    assert buckets["70%+"]["hit_rate"] == 1.0
+
+
+def test_track_record_confidence_buckets_are_empty_when_no_td_predictions_resolved():
+    record = store.get_track_record()
+
+    buckets = record["player_props"]["anytime_td"]["confidence_buckets"]
+    assert [b["label"] for b in buckets] == ["50-60%", "60-70%", "70%+"]
+    assert all(b["n"] == 0 and b["hit_rate"] is None for b in buckets)
+
+
+def test_track_record_signed_bias_is_positive_for_consistent_overprediction():
+    store.record_player_prop_predictions([
+        _prop(market="carries", predicted_value=25.0, player_id="p1", position="RB"),
+        _prop(market="carries", predicted_value=30.0, player_id="p2", position="RB"),
+    ])
+    stats = pd.DataFrame([
+        {"game_id": "g1", "player_id": "p1", "carries": 20},
+        {"game_id": "g1", "player_id": "p2", "carries": 20},
+    ])
+    assert store.reconcile_player_prop_predictions(stats) == 2
+
+    summary = store.get_track_record()["player_props"]["carries"]
+    assert summary["n_resolved"] == 2
+    # signed error = mean(predicted - actual): over-prediction is positive.
+    assert summary["mean_signed_error"] == pytest.approx(7.5)
+    assert summary["mean_absolute_error"] == pytest.approx(7.5)
+
+
+def test_track_record_signed_bias_cancels_where_mae_does_not():
+    store.record_player_prop_predictions([
+        _prop(market="receiving_yards", predicted_value=110.0, player_id="p1", position="WR"),
+        _prop(market="receiving_yards", predicted_value=90.0, player_id="p2", position="WR"),
+    ])
+    stats = pd.DataFrame([
+        {"game_id": "g1", "player_id": "p1", "receiving_yards": 100},
+        {"game_id": "g1", "player_id": "p2", "receiving_yards": 100},
+    ])
+    assert store.reconcile_player_prop_predictions(stats) == 2
+
+    summary = store.get_track_record()["player_props"]["receiving_yards"]
+    # +10 and -10 cancel in the signed mean but both count in the unsigned MAE.
+    assert summary["mean_signed_error"] == pytest.approx(0.0)
+    assert summary["mean_absolute_error"] == pytest.approx(10.0)
+
+
+def test_track_record_reports_mae_by_position():
+    store.record_player_prop_predictions([
+        _prop(market="passing_yards", predicted_value=300.0, player_id="qb1", position="QB"),
+        _prop(market="rushing_yards", predicted_value=100.0, player_id="rb1", position="RB"),
+        _prop(market="receptions", predicted_value=6.0, player_id="wr1", position="WR"),
+    ])
+    stats = pd.DataFrame([
+        {"game_id": "g1", "player_id": "qb1", "passing_yards": 280},
+        {"game_id": "g1", "player_id": "rb1", "rushing_yards": 120},
+        {"game_id": "g1", "player_id": "wr1", "receptions": 4},
+    ])
+    assert store.reconcile_player_prop_predictions(stats) == 3
+
+    props = store.get_track_record()["player_props"]
+    assert props["passing_yards"]["mae_by_position"] == {"QB": pytest.approx(20.0)}
+    assert props["rushing_yards"]["mae_by_position"] == {"RB": pytest.approx(20.0)}
+    assert props["receptions"]["mae_by_position"] == {"WR": pytest.approx(2.0)}
+
+
+def test_track_record_handles_prop_predictions_recorded_without_position():
+    """Rows recorded before the position column existed carry NULL position;
+    the summary must not crash and groups them under "unknown"."""
+    store.record_player_prop_predictions([
+        {"game_id": "g1", "player_id": "p1", "player_name": "Old Row",
+         "market": "rushing_yards", "predicted_value": 95.0},
+    ])
+    stats = pd.DataFrame([{"game_id": "g1", "player_id": "p1", "rushing_yards": 100}])
+    assert store.reconcile_player_prop_predictions(stats) == 1
+
+    summary = store.get_track_record()["player_props"]["rushing_yards"]
+    assert summary["n_resolved"] == 1
+    assert summary["mean_absolute_error"] == pytest.approx(5.0)
+    assert summary["mae_by_position"] == {"unknown": pytest.approx(5.0)}
