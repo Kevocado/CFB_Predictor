@@ -360,6 +360,57 @@ def test_get_predictions_for_week_returns_list_of_predictions(client, monkeypatc
     assert body[0]["status"] == "pending"
 
 
+def test_get_power_rankings_sorts_descending_by_rating(client, monkeypatch):
+    monkeypatch.setattr(
+        routes, "_load_game_history",
+        lambda season: pd.DataFrame([
+            {"game_id": "g1", "season": season, "week": 1, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": 40, "away_score": 10,
+             "home_conference": "Big 12", "away_conference": "Big Ten",
+             "home_division": "fbs", "away_division": "fbs"},
+            {"game_id": "g2", "season": season, "week": 2, "gameday": "2025-09-06",
+             "home_team": "Ohio State", "away_team": "Texas", "home_score": 10, "away_score": 40,
+             "home_conference": "Big Ten", "away_conference": "Big 12",
+             "home_division": "fbs", "away_division": "fbs"},
+        ]),
+    )
+
+    response = client.get("/api/power-rankings?season=2025")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["season"] == 2025
+    ratings = [row["rating"] for row in body["rankings"]]
+    assert ratings == sorted(ratings, reverse=True)
+    assert body["rankings"][0]["rank"] == 1
+    # Texas won both meetings decisively -- should be ranked above Ohio State.
+    assert body["rankings"][0]["team"] == "Texas"
+
+
+def test_get_power_rankings_cfb_response_has_no_division_field(client, monkeypatch):
+    """CFB has no divisions (only conferences realign, see
+    models/season_projection.py) -- unlike NFL's power rankings, the CFB
+    response must never include a `division` field."""
+    monkeypatch.setattr(
+        routes, "_load_game_history",
+        lambda season: pd.DataFrame([
+            {"game_id": "g1", "season": season, "week": 1, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": 40, "away_score": 10,
+             "home_conference": "Big 12", "away_conference": "Big Ten",
+             "home_division": "fbs", "away_division": "fbs"},
+        ]),
+    )
+
+    response = client.get("/api/power-rankings?season=2025")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rankings"], "expected at least one ranking row"
+    for row in body["rankings"]:
+        assert "division" not in row
+        assert row["conference"] in {"Big 12", "Big Ten"}
+
+
 def test_get_predictions_for_week_includes_both_resolved_and_pending_games(client, monkeypatch):
     """A week in progress has both finished games (from load_training_data)
     and still-upcoming ones (from fetch_upcoming_games). The old if/else

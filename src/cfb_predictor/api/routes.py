@@ -27,7 +27,7 @@ from ..config import (
 from ..data import games as games_data
 from ..data import player_stats, sportsbook_api
 from ..features import build as feature_build
-from ..features import player_usage
+from ..features import player_usage, power_ratings
 from ..models import game_outcome, manifest, player_props, season_projection
 from ..odds import value_bets
 from ..tracking import store
@@ -525,6 +525,52 @@ def _get_standings_live(season: int):
         return _predict_game_from_models(models, home, away, history)
 
     return season_projection.project_standings(remaining, current_records, team_conferences, predict_fn)
+
+
+@router.get("/power-rankings")
+def get_power_rankings(season: int = CURRENT_SEASON):
+    if PUBLIC_MODE:
+        snap = _public_snapshot()
+        if snap.get("season") == season and "power_rankings" in snap:
+            return snap["power_rankings"]
+    return _get_power_rankings_live(season)
+
+
+def _get_power_rankings_live(season: int) -> dict:
+    """Elo-style power ratings for every FBS team, exposed for the first
+    time via this endpoint -- features/power_ratings.py's final_ratings()
+    was previously only ever consumed internally as a training feature.
+    Ratings are computed off the full multi-season history (so a team's
+    rating carries continuity across season boundaries, same as it does as
+    a training feature); win/loss/tie record and conference are scoped to
+    just this season's own games, same as _get_standings_live already does.
+    CFB has no divisions (only conferences realign; see
+    models/season_projection.py's own docstring) -- unlike NFL's power
+    rankings, no `division` field is included here."""
+    history = _load_game_history(season)
+    ratings = power_ratings.final_ratings(history)
+
+    season_games = history[history["season"] == season]
+    played = season_games[season_games["home_score"].notna() & season_games["away_score"].notna()]
+    records = season_projection.compute_current_records(played)
+    team_conferences = season_projection.build_team_conferences(season_games)
+
+    rows = []
+    for team, conference in team_conferences.items():
+        record = records.get(team, {"wins": 0, "losses": 0, "ties": 0})
+        rows.append({
+            "team": team,
+            "rating": ratings.get(team, power_ratings.DEFAULT_START_RATING),
+            "wins": record["wins"],
+            "losses": record["losses"],
+            "ties": record["ties"],
+            "conference": conference,
+        })
+    rows.sort(key=lambda r: r["rating"], reverse=True)
+    for i, row in enumerate(rows, start=1):
+        row["rank"] = i
+
+    return {"season": season, "rankings": rows}
 
 
 @router.post("/retrain")
