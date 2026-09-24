@@ -386,6 +386,27 @@ def test_get_team_form_excludes_unplayed_games(client, monkeypatch):
     assert body["recent_form"][0]["game_id"] == "g1"
 
 
+def test_get_team_form_excludes_games_from_other_seasons(client, monkeypatch):
+    """_load_game_history spans multiple seasons for power-rating
+    continuity -- recent form must not bleed in last season's results."""
+    monkeypatch.setattr(
+        routes, "_load_game_history",
+        lambda season: pd.DataFrame([
+            {"game_id": "g_old", "season": 2024, "week": 14, "gameday": "2024-11-30",
+             "home_team": "Texas", "away_team": "Texas A&M", "home_score": 17, "away_score": 7},
+            {"game_id": "g_new", "season": 2025, "week": 1, "gameday": "2025-08-30",
+             "home_team": "Texas", "away_team": "Ohio State", "home_score": 24, "away_score": 17},
+        ]),
+    )
+
+    response = client.get("/api/teams/Texas/form?season=2025&n=5")
+
+    assert response.status_code == 200
+    form = response.json()["recent_form"]
+    assert len(form) == 1
+    assert form[0]["game_id"] == "g_new"
+
+
 def test_get_head_to_head_returns_past_meetings_between_the_two_teams(client, monkeypatch):
     monkeypatch.setattr(
         routes.games_data, "fetch_week_games",

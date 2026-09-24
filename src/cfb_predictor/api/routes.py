@@ -627,15 +627,18 @@ def _get_power_rankings_live(season: int) -> dict:
 @router.get("/teams/{team}/form")
 def get_team_form(team: str, season: int = CURRENT_SEASON, n: int = 5):
     history = _load_game_history(season)
-    return _team_form(team, history, n)
+    return _team_form(team, history, n, season)
 
 
-def _team_form(team: str, history: pd.DataFrame, n: int) -> dict:
+def _team_form(team: str, history: pd.DataFrame, n: int, season: int) -> dict:
     """Last n played games' W/L/T + score for `team`, oldest-to-newest --
     pure filter/reshape of the multi-season history every other endpoint
-    already loads via _load_game_history, no new data fetch."""
+    already loads via _load_game_history, no new data fetch. Restricted to
+    `season` -- history spans multiple seasons for power-rating continuity,
+    but recent form should only ever reflect the current season."""
     involved = history[
-        ((history["home_team"] == team) | (history["away_team"] == team))
+        (history["season"] == season)
+        & ((history["home_team"] == team) | (history["away_team"] == team))
         & history["home_score"].notna() & history["away_score"].notna()
     ].sort_values("gameday")
     recent = involved.tail(n)
