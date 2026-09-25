@@ -284,3 +284,22 @@ def test_track_record_handles_prop_predictions_recorded_without_position():
     assert summary["n_resolved"] == 1
     assert summary["mean_absolute_error"] == pytest.approx(5.0)
     assert summary["mae_by_position"] == {"unknown": pytest.approx(5.0)}
+
+
+def test_get_predictions_for_week_marks_picks_rebuilt_after_kickoff():
+    """A pick backfilled after the game is shown but is not a pre-kickoff call."""
+    store.record_game_predictions([_future_game(game_id="g1")])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+    store.record_resolved_game_predictions([{
+        "game_id": "g3", "home_team": "Army", "away_team": "Navy", "commence_time": "2025-09-06T17:00:00+00:00",
+        "home_win_prob": 0.4, "away_win_prob": 0.6, "actual_home_score": 10, "actual_away_score": 24,
+    }])
+    games_df = pd.DataFrame([
+        {"game_id": "g1", "home_team": "Alabama", "away_team": "Georgia"},
+        {"game_id": "g3", "home_team": "Army", "away_team": "Navy"},
+    ])
+
+    by_id = {row["game_id"]: row for row in store.get_predictions_for_week(2025, 1, games_df)}
+
+    assert by_id["g1"]["rebuilt"] is False
+    assert by_id["g3"]["rebuilt"] is True

@@ -458,6 +458,17 @@ def reconcile_player_prop_predictions(player_stats_df: pd.DataFrame) -> int:
         return resolved_count
 
 
+def _snapshotted_after_kickoff(snapshotted_at: str, commence_time: str) -> bool:
+    def parse(value: str) -> datetime:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    try:
+        return parse(snapshotted_at) >= parse(commence_time)
+    except ValueError:
+        return False
+
+
 def get_predictions_for_week(season: int, week: int, games_df: pd.DataFrame) -> list[dict]:
     if games_df.empty:
         return []
@@ -479,6 +490,9 @@ def get_predictions_for_week(season: int, week: int, games_df: pd.DataFrame) -> 
         results.append({
             "game_id": game["game_id"],
             "status": "resolved" if resolved else "pending",
+            # Snapshotted at or after kickoff means rebuilt after the fact
+            # (record_resolved_game_predictions): shown, never counted.
+            "rebuilt": _snapshotted_after_kickoff(row["snapshotted_at"], row["commence_time"]),
             "home_win_prob": row["home_win_prob"],
             "away_win_prob": row["away_win_prob"],
             "verdict": get_game_verdict(game["game_id"]) if resolved else None,
