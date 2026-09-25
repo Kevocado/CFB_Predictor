@@ -266,7 +266,14 @@ def get_track_record() -> dict:
     with contextlib.closing(_connect()) as conn, conn:
         resolved_games = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 1", conn)
         resolved_props = pd.read_sql("SELECT * FROM player_prop_predictions WHERE resolved = 1", conn)
-    return {"games": _summarize_games(resolved_games), "player_props": _summarize_player_props(resolved_props)}
+    # Only picks made before kickoff count; rebuilt ones are reported apart.
+    if not resolved_games.empty:
+        rebuilt = resolved_games.apply(lambda r: _snapshotted_after_kickoff(r["snapshotted_at"], r["commence_time"]), axis=1).astype(bool)
+    else:
+        rebuilt = pd.Series(dtype=bool)
+    n_rebuilt = int(rebuilt.sum())
+    resolved_games = resolved_games[~rebuilt] if not resolved_games.empty else resolved_games
+    return {"games": {**_summarize_games(resolved_games), "n_rebuilt": n_rebuilt}, "player_props": _summarize_player_props(resolved_props)}
 
 
 def _summarize_games(resolved: pd.DataFrame) -> dict:
@@ -465,8 +472,9 @@ def _snapshotted_after_kickoff(snapshotted_at: str, commence_time: str) -> bool:
 
     try:
         return parse(snapshotted_at) >= parse(commence_time)
-    except ValueError:
-        return False
+    except (TypeError, ValueError):
+        # Can't prove it was made before kickoff, so it doesn't count.
+        return True
 
 
 def get_predictions_for_week(season: int, week: int, games_df: pd.DataFrame) -> list[dict]:

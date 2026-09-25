@@ -303,3 +303,23 @@ def test_get_predictions_for_week_marks_picks_rebuilt_after_kickoff():
 
     assert by_id["g1"]["rebuilt"] is False
     assert by_id["g3"]["rebuilt"] is True
+
+
+def test_track_record_leaves_rebuilt_picks_out_of_every_rate():
+    """Picks backfilled after kickoff are shown, never counted (PRODUCT.md)."""
+    store.record_game_predictions([_future_game(game_id="g1")])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 10, "away_score": 20}]))
+    store.record_resolved_game_predictions([{
+        "game_id": "g3", "home_team": "H", "away_team": "A", "commence_time": "2025-09-07T17:00:00+00:00",
+        "home_win_prob": 0.4, "away_win_prob": 0.6, "actual_home_score": 10, "actual_away_score": 24,
+    }])
+
+    games = store.get_track_record()["games"]
+
+    assert games["n_resolved"] == 1
+    assert games["n_rebuilt"] == 1
+
+
+def test_an_unreadable_snapshot_time_counts_as_rebuilt():
+    """When the timing can't be proven, the honest default is 'rebuilt'."""
+    assert store._snapshotted_after_kickoff("not a time", "2025-09-07T17:00:00+00:00") is True
