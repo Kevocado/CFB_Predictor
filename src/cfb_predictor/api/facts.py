@@ -174,6 +174,9 @@ def _load_game(game_id: str) -> tuple[int, int, dict]:
 
 
 def _snapshot_prediction(season: int, week: int, game_id: str) -> dict | None:
+    """The prediction baked into the public snapshot. Only for games that
+    haven't started: the snapshot rebuilds recent rounds after kickoff, so
+    for a started game this is today's model, not a pre-start read."""
     snap = _snapshot_week(season, week) or {}
     predictions = snap.get("predictions") or {}
     for key, value in predictions.items():
@@ -368,12 +371,12 @@ def get_facts(game_id: str) -> dict:
     row = _week_row(season, week, game_id)
 
     if started:
-        # A started game is only ever described by what was stored before it
-        # began. Today's model is not a substitute for a pre-start pick, so
-        # the live path is never taken here.
-        if PUBLIC_MODE:
-            stored = _snapshot_prediction(season, week, game_id)
-        elif row is not None:
+        # A started game is only ever described by the tracking row stored
+        # before it began, in both modes. The public snapshot is NOT that: it
+        # rebuilds recent rounds every few hours, so its prediction for a
+        # started game is today's model, recomputed after kickoff. The row
+        # carries no margin/total, so those markets are simply absent.
+        if row is not None and row.get("home_win_prob") is not None:
             stored = {
                 "home_win_prob": row.get("home_win_prob"),
                 "away_win_prob": row.get("away_win_prob"),
