@@ -534,6 +534,24 @@ def get_track_record():
     return store.get_track_record()
 
 
+@router.get("/kalshi-feed")
+def get_kalshi_feed():
+    """Read-only feed for the Algo Trade Hub: frozen pre-game snapshots for games that have not
+    kicked off, plus reliability buckets over graded pre-game snapshots.
+
+    Served from the tracking database only, so it never recomputes a prediction: a live forecast
+    is a different number from the snapshot the hub graded, and recomputing would swap the series
+    out from under the calibration check with no error anywhere.
+    """
+    return {
+        "sport": "cfb",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "lead_hours": SNAPSHOT_LEAD_HOURS,
+        "games": store.get_feed_predictions(),
+        "calibration": store.get_calibration(),
+    }
+
+
 @router.get("/games/{game_id}/verdict")
 def get_game_verdict(game_id: str):
     verdict = store.get_game_verdict(game_id)
