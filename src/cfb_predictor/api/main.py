@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from ..config import PUBLIC_MODE, PUBLIC_SNAPSHOT_POLL_SECONDS, TRACKING_DB_BACKUP_PATH, TRACKING_DB_PATH
+from .facts import router as facts_router
 from .routes import (
     current_season_and_week,
     refresh_public_snapshot_from_remote,
@@ -127,6 +128,10 @@ async def debug_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(router)
+# The explainer service calls {SPORT_API}/facts/{id} on the API root, so this
+# router carries no /api prefix. /facts/upcoming is declared before
+# /facts/{game_id} inside facts.py so it isn't swallowed by the path parameter.
+app.include_router(facts_router)
 
 
 @app.get("/")

@@ -1,10 +1,9 @@
 name: Deploy CFB Predictor to Azure Container Apps
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'data/public_snapshot.json'
+  # Everything runs on the VPS now: this Azure deploy no longer fires on push
+  # or PR. Run it by hand from the Actions tab only if Azure is ever needed.
+  workflow_dispatch: {}
 
 permissions:
   id-token: write

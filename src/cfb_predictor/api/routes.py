@@ -26,6 +26,7 @@ from ..config import (
 )
 from ..data import games as games_data
 from ..data import player_stats, sportsbook_api
+from ..data import advanced_stats
 from ..features import build as feature_build
 from ..features import player_usage, power_ratings
 from ..models import game_outcome, manifest, player_props, season_projection
@@ -706,6 +707,37 @@ def _get_head_to_head_live(game_id: str, season: int, week: int, n_seasons: int)
         for _, g in meetings_df.iterrows()
     ]
     return {"game_id": game_id, "meetings": meetings}
+
+
+@router.get("/hub/teams")
+def get_hub_teams(season: int = CURRENT_SEASON):
+    if PUBLIC_MODE:
+        snap = _public_snapshot()
+        if snap.get("season") == season and snap.get("hub_teams"):
+            return snap["hub_teams"]
+    return _get_hub_teams_live(season)
+
+
+def _get_hub_teams_live(season: int) -> dict:
+    advanced = advanced_stats.fetch_advanced(season)
+    games = _load_game_history(season)
+    return {"season": season, "teams": advanced_stats.team_hub(advanced, games, season),
+            "advanced_available": bool(advanced)}
+
+
+@router.get("/hub/players")
+def get_hub_players(season: int = CURRENT_SEASON):
+    if PUBLIC_MODE:
+        snap = _public_snapshot()
+        if snap.get("season") == season and snap.get("hub_players"):
+            return snap["hub_players"]
+    return _get_hub_players_live(season)
+
+
+def _get_hub_players_live(season: int) -> dict:
+    weekly = _load_player_history(season)
+    ppa = advanced_stats.fetch_player_ppa(season)
+    return {"season": season, **advanced_stats.player_hub(weekly, ppa, season)}
 
 
 @router.post("/retrain")

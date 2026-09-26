@@ -86,6 +86,18 @@ def build_snapshot(previous: dict | None = None) -> dict:
         print(f"  ! skipped power rankings: {exc}")
         power_rankings = previous.get("power_rankings", {}) if previous.get("season") == season else {}
 
+    print("Building Data Hub tables...")
+    try:
+        hub_teams = routes._get_hub_teams_live(season)
+    except Exception as exc:
+        print(f"  ! skipped hub teams: {exc}")
+        hub_teams = previous.get("hub_teams", {}) if previous.get("season") == season else {}
+    try:
+        hub_players = routes._get_hub_players_live(season)
+    except Exception as exc:
+        print(f"  ! skipped hub players: {exc}")
+        hub_players = previous.get("hub_players", {}) if previous.get("season") == season else {}
+
     import pandas as pd
 
     return {
@@ -95,6 +107,8 @@ def build_snapshot(previous: dict | None = None) -> dict:
         "weeks": weeks,
         "standings": standings,
         "power_rankings": power_rankings,
+        "hub_teams": hub_teams,
+        "hub_players": hub_players,
     }
 
 

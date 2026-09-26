@@ -266,7 +266,14 @@ def get_track_record() -> dict:
     with contextlib.closing(_connect()) as conn, conn:
         resolved_games = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 1", conn)
         resolved_props = pd.read_sql("SELECT * FROM player_prop_predictions WHERE resolved = 1", conn)
-    return {"games": _summarize_games(resolved_games), "player_props": _summarize_player_props(resolved_props)}
+    # Only picks made before kickoff count; rebuilt ones are reported apart.
+    if not resolved_games.empty:
+        rebuilt = resolved_games.apply(lambda r: _snapshotted_after_kickoff(r["snapshotted_at"], r["commence_time"]), axis=1).astype(bool)
+    else:
+        rebuilt = pd.Series(dtype=bool)
+    n_rebuilt = int(rebuilt.sum())
+    resolved_games = resolved_games[~rebuilt] if not resolved_games.empty else resolved_games
+    return {"games": {**_summarize_games(resolved_games), "n_rebuilt": n_rebuilt}, "player_props": _summarize_player_props(resolved_props)}
 
 
 def _summarize_games(resolved: pd.DataFrame) -> dict:
@@ -458,6 +465,18 @@ def reconcile_player_prop_predictions(player_stats_df: pd.DataFrame) -> int:
         return resolved_count
 
 
+def _snapshotted_after_kickoff(snapshotted_at: str, commence_time: str) -> bool:
+    def parse(value: str) -> datetime:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    try:
+        return parse(snapshotted_at) >= parse(commence_time)
+    except (TypeError, ValueError):
+        # Can't prove it was made before kickoff, so it doesn't count.
+        return True
+
+
 def get_predictions_for_week(season: int, week: int, games_df: pd.DataFrame) -> list[dict]:
     if games_df.empty:
         return []
@@ -479,6 +498,9 @@ def get_predictions_for_week(season: int, week: int, games_df: pd.DataFrame) -> 
         results.append({
             "game_id": game["game_id"],
             "status": "resolved" if resolved else "pending",
+            # Snapshotted at or after kickoff means rebuilt after the fact
+            # (record_resolved_game_predictions): shown, never counted.
+            "rebuilt": _snapshotted_after_kickoff(row["snapshotted_at"], row["commence_time"]),
             "home_win_prob": row["home_win_prob"],
             "away_win_prob": row["away_win_prob"],
             "verdict": get_game_verdict(game["game_id"]) if resolved else None,
