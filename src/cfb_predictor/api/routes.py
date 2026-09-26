@@ -713,7 +713,7 @@ def _get_head_to_head_live(game_id: str, season: int, week: int, n_seasons: int)
 def get_hub_teams(season: int = CURRENT_SEASON):
     if PUBLIC_MODE:
         snap = _public_snapshot()
-        if snap.get("season") == season and "hub_teams" in snap:
+        if snap.get("season") == season and snap.get("hub_teams"):
             return snap["hub_teams"]
     return _get_hub_teams_live(season)
 
@@ -729,7 +729,7 @@ def _get_hub_teams_live(season: int) -> dict:
 def get_hub_players(season: int = CURRENT_SEASON):
     if PUBLIC_MODE:
         snap = _public_snapshot()
-        if snap.get("season") == season and "hub_players" in snap:
+        if snap.get("season") == season and snap.get("hub_players"):
             return snap["hub_players"]
     return _get_hub_players_live(season)
 

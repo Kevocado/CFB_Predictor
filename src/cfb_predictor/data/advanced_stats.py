@@ -15,6 +15,9 @@ import pandas as pd
 from ..config import CACHE_DIR, CFBD_API_KEY
 
 MAX_AGE_SECONDS = 24 * 3600
+# After a failed call (quota, outage), wait this long before trying again,
+# so a bad hour costs one call rather than one per page view.
+RETRY_AFTER_SECONDS = 3600
 POSITIONS = ["QB", "RB", "WR", "TE"]
 SUM_COLS = ["passing_yards", "passing_tds", "rushing_yards", "rushing_tds", "receiving_yards",
             "receiving_tds", "receptions", "carries"]
@@ -51,17 +54,19 @@ def _cached(kind: str, season: int, call) -> list[dict]:
     if not (CFBD_API_KEY or "").strip():
         return []
     path = CACHE_DIR / "cfbd_advanced" / f"{kind}_{season}.json"
-    if path.exists():
-        body = json.loads(path.read_text())
-        if time.time() - body.get("fetched_at", 0) < MAX_AGE_SECONDS:
-            return body["rows"]
+    body = json.loads(path.read_text()) if path.exists() else {"fetched_at": 0, "rows": []}
+    now = time.time()
+    if now - body.get("fetched_at", 0) < MAX_AGE_SECONDS or now - body.get("failed_at", 0) < RETRY_AFTER_SECONDS:
+        return body["rows"]
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         rows = call(season)
     except Exception:
-        # Quota, network or schema trouble: serve the last copy if any.
-        return json.loads(path.read_text())["rows"] if path.exists() else []
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"fetched_at": time.time(), "rows": rows}))
+        # Quota, network or schema trouble: keep the last copy (if any) and
+        # back off, rather than spend another call on every request.
+        path.write_text(json.dumps({**body, "failed_at": now}))
+        return body["rows"]
+    path.write_text(json.dumps({"fetched_at": now, "rows": rows}))
     return rows
 
 
@@ -139,6 +144,9 @@ def team_hub(advanced: list[dict], games: pd.DataFrame, season: int) -> list[dic
 
 
 def player_hub(weekly: pd.DataFrame, ppa: list[dict], season: int) -> dict:
+    # Box scores and PPA share CFBD athlete ids; names only as a fallback
+    # (suffixes like "Jr." and mid-season transfers break a name join).
+    ppa_by_id = {str(p["player_id"]): p["ppa_total"] for p in ppa if p.get("player_id") is not None}
     ppa_by = {(p["name"], p["team"]): p["ppa_total"] for p in ppa}
     df = weekly[(weekly["season"] == season) & weekly["position"].isin(POSITIONS)].sort_values("week")
     players = []
@@ -148,7 +156,7 @@ def player_hub(weekly: pd.DataFrame, ppa: list[dict], season: int) -> dict:
                "position": last["position"], "games": int(g["week"].nunique())}
         row.update({c: int(pd.to_numeric(g[c], errors="coerce").fillna(0).sum()) for c in SUM_COLS})
         row.update({"completions": 0, "attempts": 0, "interceptions": 0, "targets": 0})
-        epa = ppa_by.get((row["name"], row["team"]))
+        epa = ppa_by_id.get(row["player_id"], ppa_by.get((row["name"], row["team"])))
         row["epa_total"] = _r(epa, 2)
         row["target_share"] = None
         row["air_yards_share"] = None

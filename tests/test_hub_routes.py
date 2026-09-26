@@ -20,3 +20,13 @@ def test_live_teams_flag_advanced_unavailable_without_key(monkeypatch):
     monkeypatch.setattr(routes.advanced_stats, "fetch_advanced", lambda s: [])
     body = TestClient(app).get("/api/hub/teams?season=2026").json()
     assert body["advanced_available"] is False and {t["team"] for t in body["teams"]} == {"Georgia", "Clemson"}
+
+
+def test_empty_snapshot_hub_falls_back_to_live(monkeypatch):
+    monkeypatch.setattr(routes, "PUBLIC_MODE", True)
+    monkeypatch.setattr(routes, "_public_snapshot", lambda: {"season": 2026, "hub_teams": {}, "hub_players": {}})
+    monkeypatch.setattr(routes, "_get_hub_teams_live", lambda season: {"season": season, "teams": [{"team": "LIVE"}]})
+    monkeypatch.setattr(routes, "_get_hub_players_live", lambda season: {"season": season, "players": [], "leaderboards": {"QB": []}})
+    c = TestClient(app)
+    assert c.get("/api/hub/teams?season=2026").json()["teams"] == [{"team": "LIVE"}]
+    assert c.get("/api/hub/players?season=2026").json()["leaderboards"] == {"QB": []}
