@@ -850,8 +850,13 @@ def background_tracking_tick(season: int, week: int) -> None:
             logger.exception("record_game_predictions failed")
 
         try:
+            # THIS week's games only. `_get_player_props_live(season, week)` is this week's prop feed
+            # (it can fall back to the current week), while `games` also holds next week's -- so a
+            # team playing in both had its prop stored under next week's game_id, and
+            # `record_player_prop_predictions` is INSERT OR IGNORE, which would freeze that wrong
+            # snapshot forever.
             team_to_game = {}
-            for _, g in games.iterrows():
+            for _, g in games[games["week"] == week].iterrows():
                 team_to_game[g["home_team"]] = g["game_id"]
                 team_to_game[g["away_team"]] = g["game_id"]
             prop_rows = []

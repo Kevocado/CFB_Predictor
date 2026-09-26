@@ -144,3 +144,40 @@ def test_load_models_exposes_the_version(monkeypatch):
     models = manifest.load_models()
 
     assert models["model_version"] == "ridge@2026-08-20T10:00:00+00:00"
+
+
+def test_player_props_are_mapped_to_this_week_s_game_not_next_week_s(monkeypatch):
+    """The tick now snapshots this week AND next, but the prop feed is still
+    `_get_player_props_live(season, week)` for THIS week and can fall back to the current week. With
+    `team_to_game` built from both weeks, a team playing in both had its current-week prop stored
+    under next week's game_id -- and `record_player_prop_predictions` is INSERT OR IGNORE, so that
+    wrong snapshot would be frozen forever."""
+    recorded_props = []
+    games = pd.DataFrame([
+        {**_game("401871049", 4, 24), "home_team": "Stanford", "away_team": "Georgia Tech"},
+        {**_game("401871050", 5, 24 * 7), "home_team": "Stanford", "away_team": "Washington"},
+    ])
+    monkeypatch.setattr(routes, "_games_to_snapshot", lambda season, week, now, lead_hours=None: games)
+    monkeypatch.setattr(routes, "_load_models_cached", lambda: {"model_version": "ridge@t"})
+    monkeypatch.setattr(routes, "_load_game_history", lambda season: pd.DataFrame())
+    monkeypatch.setattr(routes.sportsbook_api, "fetch_game_odds", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(routes, "_predict_game_from_models", lambda *a, **k: {
+        "home_win_prob": 0.4, "away_win_prob": 0.6, "predicted_margin": -3.4, "sigma": 16.0,
+        "predicted_total": 55.0, "total_sigma": 14.0, "model_version": "ridge@t",
+    })
+    monkeypatch.setattr(routes.store, "record_game_predictions", lambda rows: 0)
+    monkeypatch.setattr(routes, "_get_player_props_live", lambda season, week: [
+        {"player_id": "p1", "player_name": "A. Back", "recent_team": "Stanford", "position": "RB",
+         "anytime_td_prob": 0.4},
+    ])
+    monkeypatch.setattr(routes.store, "record_player_prop_predictions",
+                        lambda rows: recorded_props.extend(rows) or len(rows))
+    monkeypatch.setattr(routes.games_data, "fetch_current_season_partial",
+                        lambda: pd.DataFrame(columns=["game_id", "home_score", "away_score"]))
+    monkeypatch.setattr(routes.store, "reconcile_game_predictions", lambda df: 0)
+    monkeypatch.setattr(routes.store, "backfill_unresolved_games", lambda module: 0)
+
+    routes.background_tracking_tick(season=2026, week=4)
+
+    assert recorded_props, "the prop was dropped entirely, which is a different bug"
+    assert {row["game_id"] for row in recorded_props} == {"401871049"}
