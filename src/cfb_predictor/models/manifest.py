@@ -138,6 +138,11 @@ def load_manifest() -> dict:
     return json.loads(MANIFEST_PATH.read_text())
 
 
+def model_version(manifest: dict) -> str:
+    """Identifies the trained model behind a prediction: candidate + training time."""
+    return f"{manifest['chosen_candidate']}@{manifest['trained_at']}"
+
+
 def load_models() -> dict:
     manifest = load_manifest()
     player_models = {
@@ -151,6 +156,7 @@ def load_models() -> dict:
         "game_outcome_model": _load_pickle(_artifact_path(GAME_MODEL_FILENAME)),
         "total_model": _load_pickle(_artifact_path(TOTAL_MODEL_FILENAME)),
         "chosen_candidate": manifest["chosen_candidate"],
+        "model_version": model_version(manifest),
         "sigma": manifest["sigma"],
         "total_sigma": manifest["total_sigma"],
         "player_models": player_models,
