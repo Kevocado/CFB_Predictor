@@ -223,8 +223,11 @@ def test_record_reports_pre_kickoff_hits_over_settled(public, monkeypatch):
 
 # --- pick_timing: the three cases ---------------------------------------
 
-def test_pick_timing_is_none_when_no_stored_row(public, monkeypatch):
-    _install_snapshot(monkeypatch, _snapshot())
+def test_pick_timing_is_none_only_when_there_is_no_forecast_at_all(public, monkeypatch):
+    # No tracking row, and no forecast either: there is genuinely nothing to
+    # claim. (A missing row alone is NOT enough — with a live forecast the
+    # pick is that forecast; see the test below.)
+    _install_snapshot(monkeypatch, _snapshot(prediction={"event_id": None}))
     monkeypatch.setattr(facts_mod.store, "get_predictions_for_week", lambda season, week, games_df: [])
 
     body = public.get(f"/facts/{GAME_ID}").json()
@@ -330,6 +333,56 @@ def test_public_mode_never_computes_a_live_model(public, monkeypatch):
     assert public.get(f"/facts/{GAME_ID}").status_code == 200
 
 
+# --- the pick number and its timing label must share one source ----------
+
+def test_upcoming_game_with_no_stored_row_still_shows_the_live_forecast(public, monkeypatch):
+    # Weeks out there is no tracking row yet, but the model has a current
+    # forecast. Gating the pick on the row left pick null and
+    # pick_timing "none" beside a full set of markets — the panel showed
+    # numbers it refused to make a pick from.
+    monkeypatch.setattr(facts_mod.store, "get_predictions_for_week", lambda season, week, games_df: [])
+    _install_snapshot(monkeypatch, _snapshot(prediction=_prediction(home_win_prob=0.72, away_win_prob=0.28)))
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "upcoming"
+    assert body["pick"] == {"label": "TCU", "prob": 0.72}
+    assert body["pick_timing"] == "pre_kickoff"
+    assert body["markets"]
+
+
+def test_upcoming_game_prefers_the_stored_row_so_the_number_matches_the_verdict(public, monkeypatch):
+    # With a row present the pick is the row, so the number on screen is the
+    # very record that will be judged -- and a row written late still reports
+    # itself as 'rebuilt' rather than borrowing the live forecast's label.
+    monkeypatch.setattr(
+        facts_mod.store, "get_predictions_for_week",
+        lambda season, week, games_df: _week_rows(home_win_prob=0.67, away_win_prob=0.33, rebuilt=True),
+    )
+    _install_snapshot(monkeypatch, _snapshot(prediction=_prediction(home_win_prob=0.72, away_win_prob=0.28)))
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "upcoming"
+    assert body["pick"] == {"label": "TCU", "prob": 0.67}  # the row, not 0.72
+    assert body["pick_timing"] == "rebuilt"
+    # Markets still come from the live forecast, which is legitimate here.
+    assert body["markets"]
+
+
+def test_started_game_still_takes_its_pick_and_label_from_the_row(public, monkeypatch):
+    # The counterpart: the upcoming rule above must not leak into a started
+    # game, where the row remains the only honest source.
+    started = _game(gameday="2026-08-29T16:00:00+00:00")
+    _install_snapshot(monkeypatch, _snapshot(game=started, prediction=_prediction(home_win_prob=0.81, away_win_prob=0.19)))
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "live"
+    assert body["pick"] == {"label": "TCU", "prob": 0.67}  # the row, not 0.81
+    assert body["pick_timing"] == "pre_kickoff"
+
+
 # --- live (non-public) mode: the rule that actually bites ---------------
 
 @pytest.fixture
@@ -371,6 +424,117 @@ def test_live_started_game_never_computes_a_model_and_uses_the_stored_row(live, 
     assert [m["market"] for m in body["markets"]] == ["moneyline"]
 
 
+def _stub_live_rating_gap(monkeypatch, rating_diff=7.0):
+    """Let the live feature build SUCCEED and return a real rating gap.
+
+    Deliberately not an exploding stub: _drivers wraps the build in a bare
+    `except Exception`, so a stub that raises is swallowed and the test passes
+    whether or not the gate exists. Returning a value makes the assertion
+    genuinely about the gate.
+    """
+    monkeypatch.setattr(
+        facts_mod.routes, "_load_game_history",
+        lambda season: pd.DataFrame([{"game_id": "other", "rating_diff": 0.0}]),
+    )
+    monkeypatch.setattr(
+        facts_mod.routes.feature_build, "build_features_for_game",
+        lambda home, away, history: pd.Series({"rating_diff": rating_diff}),
+    )
+
+
+def test_live_started_game_quotes_no_live_rating_gap_driver(live, monkeypatch):
+    # The rating gap is computed live from game history. For a game that has
+    # started that history already contains the game itself, so a "rating gap"
+    # would be a post-kickoff number presented as the pre-kickoff reason.
+    monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [
+        _game(gameday="2026-08-29T16:00:00+00:00"),
+    ])
+    monkeypatch.setattr(
+        facts_mod.store, "get_predictions_for_week",
+        lambda season, week, games_df: _week_rows(home_win_prob=0.77, away_win_prob=0.23),
+    )
+    _stub_live_rating_gap(monkeypatch)
+
+    body = live.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "live"
+    # The gate is real: the very same build WOULD have produced a gap.
+    assert not any(d.get("name") == "Rating gap" for d in body["drivers"])
+    # Fixed, pre-match facts are still shown.
+    assert any(d.get("name") == "Home field" for d in body["drivers"])
+
+
+def test_live_upcoming_game_does_show_the_live_rating_gap(live, monkeypatch):
+    # The counterpart: the gate must not have been achieved by dropping
+    # drivers altogether.
+    monkeypatch.setattr(facts_mod.routes.games_data, "fetch_schedules", lambda seasons, force_refresh=False: pd.DataFrame([_game()]))
+    monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [_game()])
+    monkeypatch.setattr(facts_mod.store, "get_predictions_for_week", lambda season, week, games_df: _week_rows())
+    monkeypatch.setattr(
+        facts_mod.routes, "get_game_prediction",
+        lambda season, week, game_id: _prediction(home_win_prob=0.69, away_win_prob=0.31),
+    )
+    _stub_live_rating_gap(monkeypatch)
+
+    body = live.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "upcoming"
+    gap = next(d for d in body["drivers"] if d.get("name") == "Rating gap")
+    assert gap["value"] == "+7.0 pts"
+
+
+def test_live_started_game_quotes_no_player_projections(live, monkeypatch):
+    # Player props are fetched and projected now; for a started game they are
+    # post-kickoff numbers, so none may be shown.
+    monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [
+        _game(gameday="2026-08-29T16:00:00+00:00"),
+    ])
+    monkeypatch.setattr(
+        facts_mod.store, "get_predictions_for_week",
+        lambda season, week, games_df: _week_rows(home_win_prob=0.77, away_win_prob=0.23),
+    )
+    monkeypatch.setattr(
+        facts_mod.routes, "get_player_props",
+        lambda season, week: [
+            {
+                "player_id": "p1", "player_name": "A Back", "position": "RB",
+                "recent_team": "TCU", "season_rushing_yards": 1200,
+            },
+        ],
+    )
+
+    body = live.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "live"
+    assert body["players"] == []
+
+
+def test_live_upcoming_game_does_show_player_projections(live, monkeypatch):
+    # The counterpart, so the gate above cannot be satisfied by simply
+    # returning no players ever.
+    monkeypatch.setattr(facts_mod.routes.games_data, "fetch_schedules", lambda seasons, force_refresh=False: pd.DataFrame([_game()]))
+    monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [_game()])
+    monkeypatch.setattr(facts_mod.store, "get_predictions_for_week", lambda season, week, games_df: _week_rows())
+    monkeypatch.setattr(
+        facts_mod.routes, "get_game_prediction",
+        lambda season, week, game_id: _prediction(home_win_prob=0.69, away_win_prob=0.31),
+    )
+    monkeypatch.setattr(
+        facts_mod.routes, "get_player_props",
+        lambda season, week: [
+            {
+                "player_id": "p1", "player_name": "A Back", "position": "RB",
+                "recent_team": "TCU", "season_rushing_yards": 1200,
+            },
+        ],
+    )
+
+    body = live.get(f"/facts/{GAME_ID}").json()
+
+    assert body["status"] == "upcoming"
+    assert [p["name"] for p in body["players"]] == ["A Back"]
+
+
 def test_live_upcoming_game_does_use_the_current_model(live, monkeypatch):
     monkeypatch.setattr(facts_mod.routes.games_data, "fetch_schedules", lambda seasons, force_refresh=False: pd.DataFrame([_game()]))
     monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [_game()])
@@ -383,7 +547,12 @@ def test_live_upcoming_game_does_use_the_current_model(live, monkeypatch):
     body = live.get(f"/facts/{GAME_ID}").json()
 
     assert body["status"] == "upcoming"
-    assert body["pick"] == {"label": "TCU", "prob": 0.69}
+    # The pick is the stored row, so the number on screen is the record that
+    # will be judged; the MARGINS still come from the live model, which is
+    # legitimate for a game that has not been played.
+    assert body["pick"] == {"label": "TCU", "prob": 0.67}
+    moneyline = next(m for m in body["markets"] if m["market"] == "moneyline")
+    assert moneyline["model"][_game()["home_team"]] == pytest.approx(0.69)
 
 
 # --- finals -------------------------------------------------------------
