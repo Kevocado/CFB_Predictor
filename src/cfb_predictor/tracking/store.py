@@ -55,6 +55,16 @@ def _connect() -> sqlite3.Connection:
         if column not in existing_cols:
             conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} REAL" if column in ("home_spread_line", "total_line")
                          else f"ALTER TABLE game_predictions ADD COLUMN {column} INTEGER")
+    # Kalshi feed: the predicted distribution behind each frozen snapshot, so the trade hub can
+    # price a strike from the model's own margin/total distribution instead of a point estimate.
+    #
+    # Deliberately NOT a `backfilled` column. Pre-game-ness is already derived, live, by
+    # `_snapshotted_after_kickoff` (snapshotted_at >= commence_time, failing closed): it cannot
+    # drift out of step with the timestamps, and a database written before this change needs no
+    # migration pass over its rows.
+    for column, sql_type in _FEED_COLUMNS.items():
+        if column not in existing_cols:
+            conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} {sql_type}")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS player_prop_predictions (
@@ -77,6 +87,28 @@ def _connect() -> sqlite3.Connection:
         # under "unknown" in the summary).
         conn.execute("ALTER TABLE player_prop_predictions ADD COLUMN position TEXT")
     return conn
+
+
+_FEED_COLUMNS = {
+    "predicted_margin": "REAL",
+    "sigma": "REAL",
+    "predicted_total": "REAL",
+    "total_sigma": "REAL",
+    "model_version": "TEXT",
+}
+
+
+def _parse_utc(value: str) -> datetime:
+    """ISO timestamp -> aware UTC datetime. Naive values are UTC (that is how both
+    commence_time and snapshotted_at are written)."""
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _optional_float(value) -> float | None:
+    return None if value is None or pd.isna(value) else float(value)
 
 
 def _require_pre_kickoff(commence_time: str) -> None:
@@ -112,6 +144,8 @@ def record_game_predictions(games: list[dict]) -> int:
             game.get("home_cover_prob"), game.get("away_cover_prob"),
             game.get("over_prob"), game.get("under_prob"),
             game.get("home_spread_line"), game.get("total_line"), game.get("season"), game.get("week"),
+            game.get("predicted_margin"), game.get("sigma"), game.get("predicted_total"),
+            game.get("total_sigma"), game.get("model_version"),
         )
         for game in valid_games
     ]
@@ -121,8 +155,9 @@ def record_game_predictions(games: list[dict]) -> int:
             INSERT OR IGNORE INTO game_predictions
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
                  home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
-                 home_spread_line, total_line, season, week)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 home_spread_line, total_line, season, week,
+                 predicted_margin, sigma, predicted_total, total_sigma, model_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -224,6 +259,8 @@ def record_resolved_game_predictions(games: list[dict]) -> int:
             game.get("over_prob"), game.get("under_prob"),
             game.get("home_spread_line"), game.get("total_line"), game.get("season"), game.get("week"),
             1, int(game["actual_home_score"]), int(game["actual_away_score"]), moneyline_hit, ats_hit, total_hit,
+            game.get("predicted_margin"), game.get("sigma"), game.get("predicted_total"),
+            game.get("total_sigma"), game.get("model_version"),
         ))
     with contextlib.closing(_connect()) as conn, conn:
         cursor = conn.executemany(
@@ -232,8 +269,9 @@ def record_resolved_game_predictions(games: list[dict]) -> int:
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
                  home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
                  home_spread_line, total_line, season, week,
-                 resolved, actual_home_score, actual_away_score, moneyline_hit, ats_hit, total_hit)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 resolved, actual_home_score, actual_away_score, moneyline_hit, ats_hit, total_hit,
+                 predicted_margin, sigma, predicted_total, total_sigma, model_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -274,6 +312,104 @@ def get_track_record() -> dict:
     n_rebuilt = int(rebuilt.sum())
     resolved_games = resolved_games[~rebuilt] if not resolved_games.empty else resolved_games
     return {"games": {**_summarize_games(resolved_games), "n_rebuilt": n_rebuilt}, "player_props": _summarize_player_props(resolved_props)}
+
+
+def get_feed_predictions(now: datetime | None = None) -> list[dict]:
+    """Frozen pre-game snapshots for games that have not started yet: the rows the trade hub may
+    compare against Kalshi prices.
+
+    Two exclusions, and they are the same question asked twice. `resolved = 0` drops games that
+    have already been graded; `_snapshotted_after_kickoff` drops rows written at or after kickoff
+    (PR #1's `rebuilt` rule), which is the leakage guard from spec 5a. A row that fails either is
+    never served, and an unparseable timestamp is treated as rebuilt, so the filter fails closed.
+    """
+    now = now or datetime.now(timezone.utc)
+    with contextlib.closing(_connect()) as conn:
+        rows = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 0", conn)
+    feed = []
+    for _, row in rows.iterrows():
+        if _snapshotted_after_kickoff(row["snapshotted_at"], row["commence_time"]):
+            continue
+        try:
+            start = _parse_utc(row["commence_time"])
+            snapshotted = _parse_utc(row["snapshotted_at"])
+        except (TypeError, ValueError):
+            continue
+        if start <= now:
+            continue
+        feed.append({
+            "game_id": row["game_id"],
+            "season": None if pd.isna(row["season"]) else int(row["season"]),
+            "week": None if pd.isna(row["week"]) else int(row["week"]),
+            "home": row["home_team"],
+            "away": row["away_team"],
+            "start_utc": start.isoformat(),
+            "p_home": float(row["home_win_prob"]),
+            "margin_mu": _optional_float(row["predicted_margin"]),
+            "sigma": _optional_float(row["sigma"]),
+            "total_mu": _optional_float(row["predicted_total"]),
+            "total_sigma": _optional_float(row["total_sigma"]),
+            "home_spread_line": _optional_float(row["home_spread_line"]),
+            "total_line": _optional_float(row["total_line"]),
+            "model_version": row["model_version"] if isinstance(row["model_version"], str) else None,
+            "snapshotted_at": snapshotted.isoformat(),
+            # Always False here -- that is what the rebuilt filter above guarantees. The key stays
+            # because the hub's parser rejects a truthy value, and False is the honest statement.
+            "backfilled": False,
+        })
+    return sorted(feed, key=lambda r: (r["start_utc"], r["game_id"]))
+
+
+def _calibration_buckets(pairs: list[tuple[float, int]], n_buckets: int) -> list[dict]:
+    buckets = []
+    for i in range(n_buckets):
+        lo, hi = i / n_buckets, (i + 1) / n_buckets
+        last = i == n_buckets - 1
+        inside = [(p, y) for p, y in pairs if lo <= p < hi or (last and p == 1.0)]
+        buckets.append({
+            "lo": round(lo, 4),
+            "hi": round(hi, 4),
+            "n": len(inside),
+            "mean_prob": sum(p for p, _ in inside) / len(inside) if inside else None,
+            "hit_rate": sum(y for _, y in inside) / len(inside) if inside else None,
+        })
+    return buckets
+
+
+def get_calibration(n_buckets: int = 10) -> dict:
+    """Reliability buckets over resolved, genuinely pre-game snapshots: home win probability vs
+    home won, home cover probability vs covered (at the recorded line), over probability vs went
+    over. Ties and pushes are left out.
+
+    Rebuilt rows are excluded by the same predicate the feed uses, so the buckets the hub
+    calibrates against and the rows it prices come from the same population.
+    """
+    with contextlib.closing(_connect()) as conn:
+        rows = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 1", conn)
+    winner: list[tuple[float, int]] = []
+    spread: list[tuple[float, int]] = []
+    total: list[tuple[float, int]] = []
+    for _, row in rows.iterrows():
+        if _snapshotted_after_kickoff(row["snapshotted_at"], row["commence_time"]):
+            continue
+        home, away = row["actual_home_score"], row["actual_away_score"]
+        if pd.isna(home) or pd.isna(away):
+            continue
+        margin, points = float(home - away), float(home + away)
+        if margin != 0:
+            winner.append((float(row["home_win_prob"]), int(margin > 0)))
+        line, prob = row["home_spread_line"], row["home_cover_prob"]
+        if pd.notna(line) and pd.notna(prob) and margin != float(line):
+            spread.append((float(prob), int(margin > float(line))))
+        line, prob = row["total_line"], row["over_prob"]
+        if pd.notna(line) and pd.notna(prob) and points != float(line):
+            total.append((float(prob), int(points > float(line))))
+    return {
+        "n_buckets": n_buckets,
+        "winner": _calibration_buckets(winner, n_buckets),
+        "spread": _calibration_buckets(spread, n_buckets),
+        "total": _calibration_buckets(total, n_buckets),
+    }
 
 
 def _summarize_games(resolved: pd.DataFrame) -> dict:
