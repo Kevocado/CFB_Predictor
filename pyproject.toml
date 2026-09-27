@@ -30,3 +30,8 @@ dev = ["pytest", "pytest-mock", "httpx"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+  "network: hits a live upstream API; deselect with '-m \"not network\"'",
+]
