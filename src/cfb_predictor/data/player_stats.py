@@ -138,7 +138,26 @@ def _flatten_player_game_stats(raw_games: list[dict], games_df: pd.DataFrame, se
                     if column is None:
                         continue
                     for athlete in stat_type.get("athletes", []) or []:
-                        player_id = str(athlete.get("id"))
+                        # CFBD puts team totals in this same `athletes` list, as
+                        # an entry with a NEGATIVE id and the name " Team". Left
+                        # alone it becomes a player row, the model predicts an
+                        # anytime-TD probability and yardage for it, and it
+                        # ships in the public API and the committed snapshot —
+                        # 97 of them in the week this was written.
+                        #
+                        # Keyed on the id, not the name. A name is a display
+                        # string CFBD can change; a negative id cannot become a
+                        # player by accident. NFL's feed has no such rows, which
+                        # is why this is CFB-only and why the same guard there
+                        # would be untested.
+                        raw_id = athlete.get("id")
+                        try:
+                            is_player = int(raw_id) > 0
+                        except (TypeError, ValueError):
+                            is_player = False
+                        if not is_player:
+                            continue
+                        player_id = str(raw_id)
                         key = (game_id, player_id)
                         if key not in rows:
                             rows[key] = {
