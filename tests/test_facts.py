@@ -537,7 +537,12 @@ def test_live_upcoming_game_does_show_player_projections(live, monkeypatch):
 
 def test_live_upcoming_game_does_use_the_current_model(live, monkeypatch):
     monkeypatch.setattr(facts_mod.routes.games_data, "fetch_schedules", lambda seasons, force_refresh=False: pd.DataFrame([_game()]))
-    monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [_game()])
+    # A spread_line, so the bundle actually carries a spread. Without one the
+    # live model's margin has nowhere to go, which is why this test's comment
+    # claimed the margins came from the live model while nothing in the bundle
+    # held a margin at all.
+    lined = _game(spread_line=10.5)
+    monkeypatch.setattr(facts_mod.routes, "get_games", lambda season, week: [lined])
     monkeypatch.setattr(facts_mod.store, "get_predictions_for_week", lambda season, week, games_df: _week_rows())
     monkeypatch.setattr(
         facts_mod.routes, "get_game_prediction",
@@ -548,11 +553,28 @@ def test_live_upcoming_game_does_use_the_current_model(live, monkeypatch):
 
     assert body["status"] == "upcoming"
     # The pick is the stored row, so the number on screen is the record that
-    # will be judged; the MARGINS still come from the live model, which is
+    # will be judged. (The MARGINS were claimed here too; that claim is
+    # unverified and is recorded as such below rather than asserted.)
     # legitimate for a game that has not been played.
     assert body["pick"] == {"label": "TCU", "prob": 0.67}
+
+    # The moneyline must be the PICK's number, not the live model's. This
+    # assertion used to read the moneyline and expect 0.69, which contradicted
+    # the comment directly above it: the comment says the stored row is the
+    # number on screen and only the margins are live, and the assertion checked
+    # the one market that is neither a margin nor allowed to be live. It
+    # encoded spec §11's finding as intended behaviour.
     moneyline = next(m for m in body["markets"] if m["market"] == "moneyline")
-    assert moneyline["model"][_game()["home_team"]] == pytest.approx(0.69)
+    assert moneyline["model"][lined["home_team"]] == pytest.approx(0.67), (
+        "the moneyline disagreed with the pick it is the pick's market"
+    )
+
+    # NOT ASSERTED HERE: that the live model's MARGIN reaches the bundle for an
+    # unplayed game. The comment above used to claim it, and nothing checked —
+    # with no spread_line on the fixture there is no margin in the bundle to
+    # check, and adding one still produced no spread market on this path. So
+    # that claim is unverified rather than verified, and it is recorded as
+    # such instead of being asserted on a guess. Flagged in the PR.
 
 
 # --- finals -------------------------------------------------------------
@@ -613,3 +635,39 @@ def test_unknown_game_id_is_404(public, monkeypatch):
     _install_snapshot(monkeypatch, _snapshot())
 
     assert public.get("/facts/999999999").status_code == 404
+
+
+# --- one pick, one number ------------------------------------------------
+#
+# Spec §11's first finding, in this repo too. Measured here before the fix:
+#
+#     pick    : {'label': 'TCU', 'prob': 0.67}
+#     markets : [{'market': 'moneyline', 'model': {'TCU': 0.55, ...}}]
+#
+# `pick` is the number snapshotted before kickoff, because that is the record
+# which will be judged. For an UPCOMING game the snapshot also holds today's
+# model, recomputed, and the moneyline was built from *that*.
+
+def test_the_moneyline_market_agrees_with_the_pick(public, monkeypatch):
+    """The invariant, as a property of the bundle rather than of one fixture."""
+    _install_snapshot(monkeypatch, _snapshot(prediction=_prediction(home_win_prob=0.55, away_win_prob=0.45)))
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    pick = body["pick"]
+    moneyline = next(m for m in body["markets"] if m["market"] == "moneyline")
+    assert moneyline["model"][pick["label"]] == pick["prob"], (
+        f"the bundle states the pick twice: pick says {pick['prob']}, the moneyline "
+        f"market says {moneyline['model'][pick['label']]}. The v2 panel draws its "
+        f"figure from one and its confidence from the other."
+    )
+
+
+def test_the_pick_is_the_stored_number_even_when_the_model_moved(public, monkeypatch):
+    _install_snapshot(monkeypatch, _snapshot(prediction=_prediction(home_win_prob=0.55, away_win_prob=0.45)))
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    assert body["pick"]["label"] == "TCU"
+    assert body["pick"]["prob"] == 0.67, "the stored row must still win: it is what gets judged"
+    assert body["pick_timing"] == "pre_kickoff"
