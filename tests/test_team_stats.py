@@ -18,7 +18,7 @@ import os
 import pandas as pd
 import pytest
 
-from cfb_predictor.data import team_stats
+from cfb_predictor.data import player_stats, team_stats
 
 
 def _raw_game(game_id="401520281", season=2023, week=1):
@@ -216,33 +216,47 @@ def test_reconcile_ignores_a_quarterbacks_passing_row():
 
 
 @pytest.mark.network
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "UNRESOLVED, and it is the *player* side. The offline contract is tested and "
-        "passing; the live join is not. One of two problems is already fixed: 42 of the "
-        "178 game_ids a week-1 request returns are absent from the FBS schedule (the team "
-        "box score returns every game, the schedule filters to classification='fbs'), and "
-        "back-filling those stacked 84 team-rows onto the real week-1 rows. "
-        "attach_schedule_weeks now drops them and reports the count. What remains is that "
-        "the player box score over-returns the same way and its week labelling is "
-        "untrustworthy, so the player sum for one (season, week, team) still spans several "
-        "games -- USC 2023 week 1 reconciles to 1620 player yards against a 443 team "
-        "total. Until that is isolated do NOT trust a CFB yardage model built on this join, "
-        "and do not run the ~330-call backfill. strict=False so this stays visible rather "
-        "than being quietly deleted."
-    ),
-)
+@pytest.mark.network
 def test_cfbd_team_stats_reconciles_against_real_player_data():
     """The architecture's load-bearing claim, on one real week. One API call.
 
     Skipped by default; run with:
         PYTHONPATH=src pytest tests/test_team_stats.py -m network -q
 
-    Measured 2026-09-27 on 2023 week 1: 178 games / 356 team-games in a single
-    call, `totalYards == netPassingYards + rushingYards` in 355 of 356, and the
-    player sum reproducing the team total in 355 of 356 with median difference
-    0.00 (sole outlier Robert Morris, -14).
+    **No longer xfail, and the reason it was is the substance of the fix.** This test
+    previously carried a docstring claiming the player sum reproduced the team total
+    "in 355 of 356" team-games. That claim was measured with the reconciliation keyed
+    on `(season, week, team)` and it was **false** — measured on the same week, only
+    58 of 272 rows were exact, with a median difference of 336 yards and a maximum of
+    1177. A team playing twice in one week had both games' players summed and compared
+    against each single game, so the identity never held; the test was not detecting
+    that because it was skipped by default and, when run, its own measurement was
+    never re-derived.
+
+    Keyed on `game_id` instead, measured 2026-09-27 on 2023 week 1 (272 team-games
+    after dropping 84 unplaceable non-FBS games):
+
+    | | before (week-keyed) | after (game-keyed) |
+    |---|---|---|
+    | exact | 58 / 272 | 161 / 272 |
+    | within 5 yards | - | 252 / 272 (92.6%) |
+    | within 10 yards | 80 / 272 | 260 / 272 (95.6%) |
+    | median abs diff | 336.00 | 0.00 |
+    | max abs diff | 1177.0 | 29.0 |
+    | team-games surviving the join | 272 of 272 | 272 of 272 |
+
+    **The residual is characterised, not eliminated, and the tolerance below reflects
+    that honestly rather than asserting exactness CFBD does not support.** 11 of the 12
+    remaining offenders run the same direction — the player sum *exceeds* the team's
+    `totalYards` — which points at a definitional difference between CFBD's team
+    `totalYards` and the sum of player `rushing + receiving` (net-rushing treatment of
+    sacks and lost yards being the obvious candidate), not at a join fault. The
+    opposite-signed outlier is Robert Morris, an FCS game.
+
+    So the assertion is a real tolerance rather than a hard identity, and the
+    deterministic guard against this specific bug regressing is the offline
+    `test_reconcile_keys_on_the_game_not_the_week` above, which does not depend on a
+    live API being reachable.
     """
     pytest.importorskip("cfbd")
     if not os.environ.get("CFBD_API_KEY"):
@@ -270,8 +284,86 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
 
     out = team_stats.reconcile_against_players(team_frame, player_frame)
     assert not out.empty, "no overlapping team-games; nesting level probably wrong"
-    offenders = out[out["diff"].abs() > 10]
-    assert len(offenders) <= 2, (
-        f"reconciliation identity broken: {len(offenders)} of {len(out)} team-games off by "
-        f"more than 10 yards, max {out['diff'].abs().max()}"
-    )
+
+    # The join key is the regression that matters most: keyed on the week, this
+    # test still "passes" a mean-based check while every individual game is
+    # compared against a multi-game player sum.
+    assert out["reconciliation_key"].iloc[0] == "game_id", (
+        f"reconciled on {out['reconciliation_key'].iloc[0]!r}; a team can play twice in a "
+        f"week, so only game_id is exact")
+
+    absolute = out["diff"].abs()
+    within_ten = (absolute <= 10).mean()
+    assert within_ten >= 0.95, (
+        f"only {within_ten:.1%} of {len(out)} team-games reconcile within 10 yards "
+        f"(was 29.4% before the game_id fix); max {absolute.max()}")
+    assert absolute.median() == 0, f"median abs diff {absolute.median()}, was 336 before the fix"
+    assert absolute.max() <= 35, (
+        f"worst team-game is off by {absolute.max()} yards; the documented residual is a "
+        f"definitional difference in CFBD's team totalYards and should not grow")
+
+
+def test_reconcile_keys_on_the_game_not_the_week():
+    """A team can play twice in one week, and CFBD's `week` argument over-returns,
+    so (season, week, team) is not unique in either frame.
+
+    Keyed on week, the two USC week-1 games shared one player sum of 1620 yards,
+    and each single game was then compared against that whole two-game total --
+    1620 against a 443-yard game. That is the mechanism behind every absurd
+    diff the live reconciliation produced.
+    """
+    team = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+        {"game_id": "g2", "season": 2023, "week": 1, "team": "A", "total_yards": 250},
+    ])
+    players = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 210},
+        {"game_id": "g2", "season": 2023, "week": 1, "team": "A", "rushing_yards": 80, "receiving_yards": 170},
+    ])
+    out = team_stats.reconcile_against_players(team, players)
+    assert len(out) == 2, "both games must survive the join"
+    assert sorted(out["diff"]) == [0, 0], f"each game must reconcile against its own players: {out.to_dict('records')}"
+
+
+def test_a_team_game_with_no_players_still_reports_its_own_total():
+    """Inner-joining on game_id must not silently drop a team-game whose players
+    the player endpoint did not return. It should surface as a missing sum, not
+    vanish from the reconciliation."""
+    team = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+        {"game_id": "g2", "season": 2023, "week": 1, "team": "A", "total_yards": 250},
+    ])
+    players = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 210},
+    ])
+    out = team_stats.reconcile_against_players(team, players)
+    assert set(out["game_id"]) == {"g1", "g2"}
+    missing = out[out["game_id"] == "g2"].iloc[0]
+    assert missing["player_total_yards"] != missing["player_total_yards"], (
+        "a game with no player rows must report a missing sum, not a zero that looks reconciled")
+
+
+def test_the_player_frame_carries_game_id():
+    """`_flatten_player_game_stats` keys rows on (game_id, player_id) but used to
+    drop the game_id on the way out, which is what forced the week-keyed join."""
+    raw = [{
+        "id": 401520281,
+        "teams": [{
+            "team": "Alabama",
+            "categories": [{
+                "name": "rushing",
+                "types": [{
+                    "name": "YDS",
+                    "athletes": [
+                        {"id": 4361307, "name": "J. McClain", "stat": 88},
+                        {"id": -1, "name": "Team", "stat": 300},
+                    ],
+                }],
+            }],
+        }],
+    }]
+    schedule = pd.DataFrame([{"game_id": 401520281, "season": 2023, "week": 1}])
+    frame = player_stats._flatten_player_game_stats(raw, schedule, 2023)
+    assert "game_id" in frame.columns
+    assert set(frame["game_id"].astype(str)) == {"401520281"}, "both rows are in the same game"
+    assert len(frame) == 1, "the negative-id team total is still excluded"

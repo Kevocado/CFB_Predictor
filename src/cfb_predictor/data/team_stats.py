@@ -37,21 +37,36 @@ Note the quarterback special case when reconciling: a QB's `passing.YDS` is the
 *team's* passing total, so a QB must be counted via `passing` or excluded from
 the receiving-side sum, never both.
 
-**Known unresolved.** The live reconciliation does not yet pass. Two distinct
-problems were isolated, one fixed and one open:
+**Reconciliation status, measured 2026-09-27.** Both problems that once blocked
+it are fixed, and the join is now sound enough to build on:
 
-- *Fixed.* 42 of the 178 game_ids returned by a week-1 request are absent from
-  the FBS schedule, because the team box score returns every game while
-  `fetch_schedules` filters to `classification="fbs"` (Air Force vs Robert
-  Morris is one). Back-filling those with `requested_week` stacked 84 team-rows
-  on top of the genuine week-1 rows. `attach_schedule_weeks` now drops them.
-- *Open.* The **player** box score over-returns the same way, and its week
-  labelling is not trustworthy either, so the player sum for a single
-  (season, week, team) still spans several games — USC 2023 week 1 reconciles to
-  1620 player yards against a 443 team total. Until that is isolated, do not
-  build a CFB yardage model on this join and do not run the ~330-call backfill.
-  NFL's equivalent identity is verified clean (544/544 exact), so that side is
-  unaffected.
+- 42 of the 178 game_ids a week-1 request returns are absent from the FBS
+  schedule, because the team box score returns every game while `fetch_schedules`
+  filters to `classification="fbs"` (Air Force vs Robert Morris is one).
+  Back-filling those with `requested_week` stacked 84 team-rows on top of the
+  genuine week-1 rows; `attach_schedule_weeks` now drops them and counts them.
+- The player sum was keyed on `(season, week, team)`, which is **not unique** — a
+  team can play twice in one week — so both games' players were summed and
+  compared against each single game. That is where a 1,620-yard "player total"
+  for one 443-yard game came from. `game_id` is now carried through the player
+  frame and is the join key.
+
+On 2023 week 1, 272 team-games: 161 exact, 260 within 10 yards (95.6%), median
+absolute difference 0.00, maximum 29 yards. Previously 58 exact, median 336,
+maximum 1177.
+
+**The residual is characterised, not eliminated.** 11 of the 12 remaining
+offenders run the same direction — the player sum *exceeds* the team's
+`totalYards` — which points at a definitional difference between CFBD's team
+`totalYards` and the sum of player `rushing + receiving`, with net-rushing
+treatment of sacks the obvious candidate. NFL's equivalent identity is verified
+clean (544/544 exact), so this is a property of the CFB source rather than a
+shared bug. A yardage model can be built on this join; it should be validated
+against the same 10-yard tolerance rather than assumed exact.
+
+There is still no backfill writing team yardage into the tracking DB, and the
+store must be keyed on `game_id` — keying it on the week is what caused the bug
+above, and would hide it at the persistence layer.
 """
 
 from __future__ import annotations
@@ -286,14 +301,24 @@ def add_total_yards(frame: pd.DataFrame) -> pd.DataFrame:
 def reconcile_against_players(
     team_frame: pd.DataFrame, player_frame: pd.DataFrame
 ) -> pd.DataFrame:
-    """Per (season, week, team): team `totalYards`, the player sum, and the gap.
+    """Per team-game: team `totalYards`, that game's player sum, and the gap.
 
-    **Both frames must carry a `week` sourced from the schedule**
-    (`attach_schedule_weeks` for the team side; the player frame already picks
-    its week up from a schedule merge). That is what makes the join key safe:
-    CFBD's team box score has no `week` field and its `week` request argument
-    over-returns, so the team frame's own week is unreliable until replaced, and
-    the player frame has no `game_id` to join on instead.
+    **Keyed on `game_id` when both frames carry one**, which is the only key that
+    is actually unique. A team can play twice in one week and CFBD's `week`
+    request argument over-returns, so `(season, week, team)` is not unique in
+    either frame: joining on it summed *both* games' players and compared the lot
+    against each single game. Measured 2023 week 1, that is where a 1,620-yard
+    "player total" for one 443-yard game came from.
+
+    Falls back to `(season, week, team)` for frames without a `game_id` so
+    hand-built fixtures and pre-`game_id` callers still work -- but a week-keyed
+    reconciliation cannot be exact, and says so in `reconciliation_key`.
+
+    **Both frames must still carry a `week` sourced from the schedule**
+    (`attach_schedule_weeks` for the team side; the player frame picks its week
+    up from a schedule merge). CFBD's team box score has no `week` field and its
+    `week` request argument over-returns, so the team frame's own week is
+    unreliable until replaced.
 
     `player_frame` is the CFB player box score with `rushing_yards` and
     `receiving_yards` already extracted per player-game (see
@@ -323,7 +348,10 @@ def reconcile_against_players(
         side["week"] = pd.to_numeric(side["week"], errors="coerce").astype("Int64")
         side["season"] = pd.to_numeric(side["season"], errors="coerce").astype("Int64")
 
-    keys = ["season", "week", "team"]
+    if "game_id" in team_frame.columns and "game_id" in player_frame.columns:
+        keys = ["game_id", "team"]
+    else:
+        keys = ["season", "week", "team"]
     player_totals = (
         player_side.groupby(keys, as_index=False)[required]
         .sum()
@@ -336,6 +364,10 @@ def reconcile_against_players(
     # player row.
     player_totals["player_total_yards"] = player_totals[summed].sum(axis=1, min_count=len(summed))
     team_totals = add_total_yards(team_side)[keys + ["total_yards"]]
-    merged = team_totals.merge(player_totals[keys + ["player_total_yards"]], on=keys, how="inner")
+    # `how="left"`, not "inner": a team-game whose players the player endpoint
+    # did not return must surface as a missing sum. An inner join drops it, and a
+    # dropped row reads as "reconciled" in any count of matches.
+    merged = team_totals.merge(player_totals[keys + ["player_total_yards"]], on=keys, how="left")
     merged["diff"] = merged["total_yards"] - merged["player_total_yards"]
+    merged["reconciliation_key"] = "game_id" if keys[0] == "game_id" else "season_week_team"
     return merged

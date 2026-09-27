@@ -70,8 +70,12 @@ def drop_team_rows(df):
     return df[keep] if (~keep).any() else df
 
 
+# `game_id` is load-bearing, not incidental: a team can play twice in one week
+# and CFBD's `week` argument over-returns, so (season, week, team) is not unique.
+# Reconciling on the week summed both games' players and compared the lot against
+# each single game. Reconciling on `game_id` is exact.
 KEEP_COLUMNS = [
-    "player_id", "player_name", "position", "recent_team", "season", "week",
+    "player_id", "player_name", "position", "recent_team", "season", "week", "game_id",
     "passing_yards", "passing_tds", "rushing_yards", "rushing_tds",
     "receiving_yards", "receiving_tds", "receptions", "targets", "carries",
 ]
@@ -202,6 +206,7 @@ def _flatten_player_game_stats(raw_games: list[dict], games_df: pd.DataFrame, se
                                 "recent_team": school,
                                 "season": season,
                                 "week": week,
+                                "game_id": game_id,
                                 **{col: 0.0 for col in _STAT_COLUMNS},
                                 "targets": float("nan"),
                             }
