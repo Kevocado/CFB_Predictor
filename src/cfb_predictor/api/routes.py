@@ -302,10 +302,18 @@ def _load_player_history(season: int) -> pd.DataFrame:
         current_df = player_stats.fetch_weekly_player_stats(
             [season], games_df, force_refresh=_player_stats_needs_refresh(season, games_df)
         )
-        return pd.concat([historical_df, current_df], ignore_index=True)
+        # Read-side guard. player_stats drops these rows at ingest, but the
+        # cache on the VPS was written before that guard existed and nothing
+        # revisits it, so the live hub kept serving them after the ingest fix
+        # landed. This also covers /players/{season}/{week}/props, which reads
+        # the same frame, and player_hub's leaderboards, built from it too.
+        return player_stats.drop_team_rows(
+            pd.concat([historical_df, current_df], ignore_index=True))
     all_seasons = history_seasons + [season]
     games_df = games_data.load_training_data(all_seasons)
-    return player_stats.fetch_weekly_player_stats(all_seasons, games_df)
+    # Read-side guard, same reason as the branch above.
+    return player_stats.drop_team_rows(
+        player_stats.fetch_weekly_player_stats(all_seasons, games_df))
 
 
 @router.get("/games")

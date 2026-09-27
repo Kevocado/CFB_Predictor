@@ -30,6 +30,46 @@ logger = logging.getLogger(__name__)
 # One call covers every FBS team for the season; refresh at most weekly.
 _ROSTER_TTL_SECONDS = 7 * 24 * 60 * 60
 
+
+def is_real_player_id(raw) -> bool:
+    """Whether a CFBD id belongs to a player rather than a team total.
+
+    CFBD puts team totals in the same `athletes` list as players, and gives them
+    a **negative** id and the name " Team". A real CFB athlete id is a positive
+    integer, so the id decides it — the name does not, because a name is a
+    display string CFBD can change and an id cannot become positive by accident.
+
+    One definition, used by the ingest below and by the read path
+    (`drop_team_rows`), because the read-path filter exists to agree with the
+    ingest filter. Two copies of this would agree today and drift the first time
+    one of them was edited.
+    """
+    try:
+        return int(raw) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def drop_team_rows(df):
+    """Remove team-total rows from an already-cached player frame.
+
+    The ingest guard only protects a *fresh* fetch. The VPS mounts
+    `./volumes/cfb-cache`, written before that guard existed, and nothing
+    revisits it — so the live hub served 254 junk rows after the ingest fix
+    landed. This is the read-side half: ingest protects the next fetch, this
+    protects everything already on disk, and each is still right if the other is
+    deleted.
+
+    A frame with no `player_id` column is returned as it came in, so the filter
+    is safe to call from a path nobody has inspected — which is the only way to
+    be sure it is safe to call from two.
+    """
+    if "player_id" not in df.columns:
+        return df
+    keep = df["player_id"].map(is_real_player_id)
+    return df[keep] if (~keep).any() else df
+
+
 KEEP_COLUMNS = [
     "player_id", "player_name", "position", "recent_team", "season", "week",
     "passing_yards", "passing_tds", "rushing_yards", "rushing_tds",
@@ -151,11 +191,7 @@ def _flatten_player_game_stats(raw_games: list[dict], games_df: pd.DataFrame, se
                         # is why this is CFB-only and why the same guard there
                         # would be untested.
                         raw_id = athlete.get("id")
-                        try:
-                            is_player = int(raw_id) > 0
-                        except (TypeError, ValueError):
-                            is_player = False
-                        if not is_player:
+                        if not is_real_player_id(raw_id):
                             continue
                         player_id = str(raw_id)
                         key = (game_id, player_id)
