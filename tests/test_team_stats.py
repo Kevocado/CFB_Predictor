@@ -186,7 +186,7 @@ def test_reconcile_reports_zero_for_consistent_rows():
     players = pd.DataFrame([
         {"season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 250},
     ])
-    out = team_stats.reconcile_against_players(team, players)
+    out = team_stats.reconcile_against_players(team, players, allow_week_key=True)
     assert out.iloc[0]["player_total_yards"] == 340
     assert out.iloc[0]["diff"] == 0
 
@@ -196,7 +196,7 @@ def test_reconcile_surfaces_a_mismatch():
     players = pd.DataFrame([
         {"season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 100},
     ])
-    out = team_stats.reconcile_against_players(team, players)
+    out = team_stats.reconcile_against_players(team, players, allow_week_key=True)
     assert out.iloc[0]["diff"] == 150
 
 
@@ -208,14 +208,13 @@ def test_reconcile_ignores_a_quarterbacks_passing_row():
         {"season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 250},
         {"season": 2023, "week": 1, "team": "A", "rushing_yards": 0, "receiving_yards": 0},
     ])
-    out = team_stats.reconcile_against_players(team, players)
+    out = team_stats.reconcile_against_players(team, players, allow_week_key=True)
     assert out.iloc[0]["diff"] == 0
 
 
 # ---------------------------------------------------------------- network
 
 
-@pytest.mark.network
 @pytest.mark.network
 def test_cfbd_team_stats_reconciles_against_real_player_data():
     """The architecture's load-bearing claim, on one real week. One API call.
@@ -270,12 +269,19 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
             team_stats.fetch_team_stats([2023], weeks=[1]),
             games_module.fetch_schedules([2023]),
         )
-        raw_players = player_stats._import_player_game_stats(2023, [1])
-        player_frame = player_stats._flatten_player_game_stats(
-            raw_players, games_module.fetch_schedules([2023]), 2023
+        # Through the PRODUCTION loader, not `_import_player_game_stats` +
+        # `_flatten_player_game_stats` directly. The previous version of this test
+        # called the private flatteners, which always emit `game_id` -- so it
+        # proved the fix on a path production never takes. A stale parquet cache
+        # written before `game_id` existed then silently put the reconciliation
+        # back on the non-unique week key, with this test still green.
+        # `force_refresh=True` also exercises the cache gate itself.
+        games_frame = games_module.fetch_schedules([2023])
+        player_frame = player_stats.fetch_weekly_player_stats(
+            [2023], games_frame, force_refresh=True
         ).rename(columns={"recent_team": "team"})
-        # The player frame keys the club as `recent_team`, the team frame as
-        # `team`. Align before reconciling.
+        assert "game_id" in player_frame.columns, (
+            "the production loader returned no game_id; the cache gate did not fire")
     except Exception as exc:  # network unavailable
         pytest.skip(f"CFBD unreachable: {exc}")
 
@@ -367,3 +373,97 @@ def test_the_player_frame_carries_game_id():
     assert "game_id" in frame.columns
     assert set(frame["game_id"].astype(str)) == {"401520281"}, "both rows are in the same game"
     assert len(frame) == 1, "the negative-id team total is still excluded"
+
+
+def test_reconcile_refuses_a_frame_with_no_game_id_by_default():
+    """A stale player cache written before `game_id` existed silently put the
+    reconciliation back on `(season, week, team)` -- the exact bug `game_id` was
+    added to fix. It failed silently *and* the suite stayed green, because the
+    tests call the flatteners directly and never touch the cached loader that
+    production uses. So the fallback now refuses unless asked for explicitly."""
+    team = pd.DataFrame([{"season": 2023, "week": 1, "team": "A", "total_yards": 340}])
+    players = pd.DataFrame([
+        {"season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 250},
+    ])
+    with pytest.raises(ValueError, match="NOT unique"):
+        team_stats.reconcile_against_players(team, players)
+    # ...and the opt-in still reconciles, for the hand-built fixtures above.
+
+
+def test_attach_schedule_weeks_refuses_to_synthesise_a_week():
+    """`fetch_schedules` returns an empty frame when the cache is cold and CFBD is
+    unreachable -- the documented cold-start case, and the reason this branch
+    exists. It used to fall back to `requested_week`, which is precisely the
+    stacking bug the rest of the function prevents, and it also returned without
+    the `dropped_unplaceable` attribute every other path sets."""
+    frame = pd.DataFrame([{"game_id": "g1", "season": 2023, "requested_week": 1, "team": "A"}])
+    with pytest.raises(ValueError, match="Refusing to fall back"):
+        team_stats.attach_schedule_weeks(frame, pd.DataFrame())
+
+
+def test_reconcile_separates_two_teams_in_one_game():
+    """Kills the `keys = ["game_id"]` mutant -- dropping `team` from the key.
+
+    A single-team fixture cannot see that: with one team per game, `game_id`
+    alone is accidentally unique. Two teams sharing one game is what makes the
+    omission visible, and it is the shape of every real game.
+    """
+    team = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "B", "total_yards": 250},
+    ])
+    players = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 210},
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "B", "rushing_yards": 80, "receiving_yards": 170},
+    ])
+    out = team_stats.reconcile_against_players(team, players)
+    assert out["reconciliation_key"].eq("game_id").all()
+    assert sorted(out["diff"]) == [0, 0], (
+        f"both teams must reconcile against their own players: {out.to_dict('records')}")
+    assert set(zip(out["team"], out["player_total_yards"])) == {("A", 300.0), ("B", 250.0)}
+
+
+def test_reconcile_drops_a_repeated_team_stanza():
+    """`(game_id, team)` uniqueness is what makes the join mean anything. It held
+    empirically but nothing enforced it, and a duplicate would not inflate the
+    player sum (the right side is grouped, so a left join cannot fan out) -- it
+    would duplicate the output row and double-count the game downstream."""
+    team = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+    ])
+    players = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 210},
+    ])
+    out = team_stats.reconcile_against_players(team, players)
+    assert len(out) == 1, "a repeated stanza must not become two reconciled games"
+    assert out["total_yards"].sum() == 300
+
+
+def test_a_half_populated_game_reports_a_missing_total_not_a_partial_one():
+    """Kills the `min_count=len(summed) -> min_count=1` mutant.
+
+    `sum(axis=1, min_count=2)` needs BOTH components populated to call a game's
+    player total complete. `min_count=1` would accept a game with only rushing
+    rows and report that as a total -- a number that is wrong rather than
+    absent, which is the worse failure: an absent one is visible in a count, a
+    partial one is not.
+    """
+    team = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+        {"game_id": "g2", "season": 2023, "week": 1, "team": "A", "total_yards": 300},
+    ])
+    players = pd.DataFrame([
+        # complete: both components
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A",
+         "rushing_yards": 90, "receiving_yards": 210},
+        # half populated: rushing only
+        {"game_id": "g2", "season": 2023, "week": 1, "team": "A",
+         "rushing_yards": 90, "receiving_yards": float("nan")},
+    ])
+    out = team_stats.reconcile_against_players(team, players).set_index("game_id")
+    assert out.loc["g1", "player_total_yards"] == pytest.approx(300)
+    partial = out.loc["g2", "player_total_yards"]
+    assert partial != partial, (
+        f"a game with only one of the two components must report a missing total, not {partial}")
+    assert out.loc["g2", "diff"] != out.loc["g2", "diff"], "and its diff must be missing too"

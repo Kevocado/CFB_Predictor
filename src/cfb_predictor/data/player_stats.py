@@ -230,15 +230,48 @@ def _season_cache_path(season: int):
     return PLAYER_STATS_CACHE_DIR / f"{season}.parquet"
 
 
+def _read_cache(path) -> pd.DataFrame | None:
+    """Cached player stats, or `None` if the cache cannot be trusted.
+
+    The `KEEP_COLUMNS` check is not defensive boilerplate, it is load-bearing.
+    `reconcile_against_players` can only key on `game_id`, because
+    `(season, week, team)` is **not unique** -- a team can play twice in one week
+    and CFBD's `week` argument over-returns, so a week-keyed join summed both
+    games' players and compared the lot against each single game.
+
+    Every player cache written before `game_id` was added to `KEEP_COLUMNS`
+    therefore cannot be reconciled, and a bare `read_parquet` would hand one back
+    with no signal at all. Verified on this machine: `CFB_Predictor/data/cache/
+    player_stats/` held nine parquet files of 12k-34k rows, **none** with a
+    `game_id` column. Same lesson as `team_stats._read_cache`: a cache that
+    cannot tell it is stale is worse than no cache.
+    """
+    if not path.exists():
+        return None
+    try:
+        cached = pd.read_parquet(path)
+    except Exception:
+        return None
+    return cached if set(KEEP_COLUMNS) <= set(cached.columns) else None
+
+
 def fetch_weekly_player_stats(
     seasons: list[int], games_df: pd.DataFrame, force_refresh: bool = False
 ) -> pd.DataFrame:
     frames = []
     for season in seasons:
         path = _season_cache_path(season)
-        if not force_refresh and path.exists():
-            frames.append(pd.read_parquet(path))
-            continue
+        if not force_refresh:
+            cached = _read_cache(path)
+            if cached is not None:
+                frames.append(cached)
+                continue
+            if path.exists():
+                logger.warning(
+                    "player-stats cache for season=%s lacks required columns (missing %s); "
+                    "refetching rather than reconciling on a non-unique key",
+                    season, sorted(set(KEEP_COLUMNS) - set(pd.read_parquet(path).columns)),
+                )
         try:
             season_games = games_df[games_df["season"] == season]
             weeks = sorted(int(w) for w in season_games["week"].dropna().unique())
@@ -247,11 +280,17 @@ def fetch_weekly_player_stats(
             flattened.to_parquet(path)
             frames.append(pd.read_parquet(path))
         except Exception:
-            if path.exists():
+            cached = _read_cache(path)
+            if cached is not None:
                 logger.warning("CFBD player-stats fetch failed for season=%s; serving stale cache", season)
-                frames.append(pd.read_parquet(path))
+                frames.append(cached)
             else:
-                logger.warning("CFBD player-stats fetch failed for season=%s; no cache available, skipping", season)
+                logger.warning(
+                    "CFBD player-stats fetch failed for season=%s and no reconcilable cache "
+                    "is available; skipping. Do NOT fall back to a cache without `game_id` -- "
+                    "it can only be joined on (season, week, team), which is not unique.",
+                    season,
+                )
 
     if not frames:
         return pd.DataFrame(columns=KEEP_COLUMNS)

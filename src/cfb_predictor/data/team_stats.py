@@ -24,11 +24,20 @@ be scheduled.
 
 Target is CFBD's own `totalYards`, which the API documents as net offensive
 yards. Verified on real data: `totalYards == netPassingYards + rushingYards` in
-355 of 356 team-games (2023 week 1), median difference 0.00.
+**271 of 272** team-games (2023 week 1, after dropping 42 unplaceable non-FBS
+games). The single exception is a 1-yard difference at Incarnate Word
+(245 + 64 = 309 against a reported 308).
 
 Reconciliation constraint. Because both sides come from the same game payload,
-`sum_players(rushing + receiving)` reproduces the team `totalYards` -- verified
-355 of 356, median error 0.00, with the single outlier Robert Morris at -14.
+`sum_players(rushing + receiving)` reproduces the team `totalYards` to within a
+small residual: **161 of 272 exact, 260 of 272 (95.6%) within 10 yards, median
+absolute difference 0.00, maximum 29.0** (2023 week 1, keyed on `game_id`).
+
+That earlier figure of "355 of 356, median error 0.00, sole outlier Robert Morris
+at -14" was **wrong on all three counts** -- it was measured on the broken
+week-keyed join, on a row count taken before unplaceable games were dropped, and
+the outlier is a residual, not a single row. Reproduced below.
+
 That makes allocate-by-share the correct architecture: project the team total
 first, then allocate. Summing independent player projections cannot reproduce
 it, which is what the dashboard does today and why it is out by 2.2-3.2x.
@@ -40,9 +49,14 @@ the receiving-side sum, never both.
 **Reconciliation status, measured 2026-09-27.** Both problems that once blocked
 it are fixed, and the join is now sound enough to build on:
 
-- 42 of the 178 game_ids a week-1 request returns are absent from the FBS
-  schedule, because the team box score returns every game while `fetch_schedules`
-  filters to `classification="fbs"` (Air Force vs Robert Morris is one).
+- 42 of the 178 game_ids a week-1 request returns are absent from the schedule.
+  The reason is **division, not week**: `get_games(classification="fbs")` matches
+  games with *at least one* FBS team, so FBS-vs-FCS "buy games" are present and
+  all 42 absent games are **FCS-vs-FCS** -- Morgan State vs Richmond
+  (`401539978`), Jackson State vs South Carolina State, Lafayette vs Sacred Heart,
+  Fordham vs Wagner, and so on. An earlier version of this note cited
+  "Air Force vs Robert Morris" as one of the 42; that is wrong, Air Force vs
+  Robert Morris (`401532570`) **is** in the schedule and reconciles normally.
   Back-filling those with `requested_week` stacked 84 team-rows on top of the
   genuine week-1 rows; `attach_schedule_weeks` now drops them and counts them.
 - The player sum was keyed on `(season, week, team)`, which is **not unique** — a
@@ -71,11 +85,14 @@ above, and would hide it at the persistence layer.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pandas as pd
 
 from ..config import CFBD_API_KEY, TEAM_STATS_CACHE_DIR
+
+logger = logging.getLogger(__name__)
 
 # CFBD's team box score is a list of {category, stat} pairs per team, not flat
 # columns. Only the ones a team-offence model would read are lifted; the full
@@ -160,10 +177,11 @@ def _flatten(raw_games: list, season: int, week: int) -> pd.DataFrame:
     - **There is no `week` field at all, and the endpoint's `week` argument does
       not reliably filter.** `get_game_team_stats(year=2023, week=1)` returns 178
       games, but only 246 of the resulting 356 team-rows carry a distinct
-      (season, week, team) key — Air Force appears twice, against Robert Morris
+      (season, week, team) key: Air Force appears twice, against Robert Morris
       and against James Madison, the latter a December bowl. The `week` written
       here is therefore the *requested* week and is wrong for any game the
-      endpoint over-returns.
+      endpoint over-returns. (This is why `attach_schedule_weeks` exists, and why
+      the reconciliation is keyed on `game_id` rather than on the week.)
 
     Consequence: **`game_id` is the only trustworthy key in this frame**, and the
     true week has to come from the schedule. `attach_schedule_weeks` does that
@@ -205,9 +223,10 @@ def attach_schedule_weeks(frame: pd.DataFrame, schedules_df: pd.DataFrame) -> pd
 
     **Rows whose `game_id` is absent from the schedule are dropped, not
     back-filled with `requested_week`.** Measured 2026-09-27 on 2023 week 1: 42 of
-    178 returned game_ids are not in the FBS schedule, because the team box score
-    returns *every* game while `fetch_schedules` filters to `classification="fbs"`.
-    Air Force vs Robert Morris is one of them. Back-filling those 42 with
+    178 returned game_ids are not in the schedule. The reason is **division, not
+    week**: `get_games(classification="fbs")` matches games with at least one FBS
+    team, so FBS-vs-FCS games are present and all 42 absent games are FCS-vs-FCS
+    (Morgan State vs Richmond, `401539978`, is one). Back-filling those 42 with
     `requested_week=1` silently stacked 84 team-rows on top of the genuine week-1
     rows, collapsing 356 rows to 246 distinct (season, week, team) keys and
     inflating any player sum that joined across them. A game that cannot be placed
@@ -218,8 +237,18 @@ def attach_schedule_weeks(frame: pd.DataFrame, schedules_df: pd.DataFrame) -> pd
     """
     out = frame.copy()
     if schedules_df.empty or not {"game_id", "week"} <= set(schedules_df.columns):
-        out["week"] = out["requested_week"]
-        return out
+        # Previously this back-filled `requested_week`, which is the exact bug the
+        # rest of this function exists to prevent: it stacks several real games
+        # onto one week, which then reconciles against each other. `fetch_schedules`
+        # returns an empty frame when the cache is cold and CFBD is unreachable, so
+        # this branch is reachable, and it was silent.
+        raise ValueError(
+            "attach_schedule_weeks needs a schedule carrying game_id and week, and got "
+            f"neither (rows={len(schedules_df)}, columns={list(schedules_df.columns)[:6]}). "
+            "Refusing to fall back to `requested_week`: CFBD's `week` argument over-returns, "
+            "so back-filling stacks several games onto one week. Call fetch_schedules() "
+            "first and let it raise if the schedule is genuinely unavailable."
+        )
     lookup = schedules_df[["game_id", "week"]].drop_duplicates(["game_id"]).copy()
     lookup["game_id"] = lookup["game_id"].astype(str)
     out["game_id"] = out["game_id"].astype(str)
@@ -299,7 +328,9 @@ def add_total_yards(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def reconcile_against_players(
-    team_frame: pd.DataFrame, player_frame: pd.DataFrame
+    team_frame: pd.DataFrame,
+    player_frame: pd.DataFrame,
+    allow_week_key: bool = False,
 ) -> pd.DataFrame:
     """Per team-game: team `totalYards`, that game's player sum, and the gap.
 
@@ -342,26 +373,70 @@ def reconcile_against_players(
                 f"schedules) first -- joining on week without it silently duplicates team-games."
             )
 
+    if "game_id" in team_frame.columns and "game_id" in player_frame.columns:
+        keys = ["game_id", "team"]
+    elif not allow_week_key:
+        # Previously this fell back silently, and that is how a stale player cache
+        # (written before `game_id` existed) reintroduced the exact bug this key
+        # was introduced to fix -- with a green test run, because the tests call
+        # the flatteners directly and never touch the cached loader. A frame
+        # without `game_id` can only be joined on a key that is not unique, so
+        # refuse rather than return a number that looks reconciled.
+        missing = [
+            name for name, frame in (("team_frame", team_frame), ("player_frame", player_frame))
+            if "game_id" not in frame.columns
+        ]
+        raise ValueError(
+            f"{missing} lack `game_id`, so the only available key is (season, week, team) -- "
+            f"which is NOT unique, because a team can play twice in one week and CFBD's "
+            f"`week` argument over-returns. Reconciling on it sums several games' players "
+            f"and compares the lot against each single game. Fix the cache "
+            f"(data.player_stats._read_cache now refetches a cache missing required columns) "
+            f"or pass allow_week_key=True if you are deliberately testing that failure."
+        )
+    else:
+        keys = ["season", "week", "team"]
+
     team_side = team_frame.copy()
+    if keys == ["game_id", "team"]:
+        # The merge's correctness rests on this being unique. It holds empirically
+        # (verified 272/272 on the 2023 week-1 cache, 600/600 across weeks 1+2 with
+        # zero game_id overlap between the two responses) but nothing enforced it,
+        # and a duplicated stanza would not inflate the player sum -- the right side
+        # is grouped, so a left join cannot fan out -- it would silently duplicate
+        # the output row and double-count that game downstream.
+        before = len(team_side)
+        team_side = team_side.drop_duplicates(["game_id", "team"])
+        if len(team_side) != before:
+            logger.warning(
+                "dropped %d duplicate (game_id, team) rows before reconciling; the team box "
+                "score returned a repeated stanza", before - len(team_side),
+            )
+        assert not team_side.duplicated(["game_id", "team"]).any(), (
+            "(game_id, team) must be unique for this join to mean anything")
     player_side = player_frame.copy()
     for side in (team_side, player_side):
         side["week"] = pd.to_numeric(side["week"], errors="coerce").astype("Int64")
         side["season"] = pd.to_numeric(side["season"], errors="coerce").astype("Int64")
 
-    if "game_id" in team_frame.columns and "game_id" in player_frame.columns:
-        keys = ["game_id", "team"]
-    else:
-        keys = ["season", "week", "team"]
     player_totals = (
         player_side.groupby(keys, as_index=False)[required]
-        .sum()
+        .sum(min_count=1)
         .rename(columns={"rushing_yards": "player_rushing_yards", "receiving_yards": "player_receiving_yards"})
     )
     summed = ["player_rushing_yards", "player_receiving_yards"]
-    # Presence is checked on the summed components, not with `min_count` on the
-    # groupby: there it is per *column* (N non-null observations of that one
-    # column), not N populated components, so it NaN'd out any game with a single
-    # player row.
+    # `min_count=1` on the groupby is load-bearing and was missing. pandas'
+    # `groupby.sum()` treats an all-NaN column as 0, so a game where *no* player
+    # has a `receiving_yards` value came back with `player_receiving_yards = 0`
+    # -- a real zero -- and the `min_count` on the axis sum below then saw two
+    # populated values and never fired. Result: a game with only rushing rows
+    # reported `player_total_yards = 90.0` instead of missing, i.e. a partial
+    # figure that looks like a complete one. Caught by mutating that axis
+    # `min_count` to 1, which the offline suite did not notice.
+    #
+    # Both are needed. The groupby `min_count=1` stops an all-NaN component
+    # collapsing to 0; the axis `min_count=len(summed)` then requires both
+    # components to be genuinely present before calling a total complete.
     player_totals["player_total_yards"] = player_totals[summed].sum(axis=1, min_count=len(summed))
     team_totals = add_total_yards(team_side)[keys + ["total_yards"]]
     # `how="left"`, not "inner": a team-game whose players the player endpoint
