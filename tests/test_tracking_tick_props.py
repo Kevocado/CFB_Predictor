@@ -22,13 +22,32 @@ from cfb_predictor.data import games as games_data
 
 
 def _game(game_id: str, week: int, home: str, away: str, played: bool = False) -> dict:
+    """A game row as the REAL normaliser produces it.
+
+    Built by feeding a raw CFBD-shaped row through `games._normalize_games`, the
+    same function `fetch_schedules` uses, so this fixture cannot drift from the
+    frame the code actually reads.
+
+    The previous version was hand-shaped and had drifted: it carried
+    `commence_time` — which the real CFBD frame does not have, and which CFB's own
+    `routes.py` *builds* from `gameday` on the way out — and it had no `gameday`
+    at all. So it went RED on main once the Kalshi feed started reading
+    `games["gameday"]` (CFB#3), which is the fourth time in this repo that a test
+    double shaped like the consumer rather than the producer has cost a round. A
+    fixture built from the producer cannot drift that way: adding a column to
+    `KEEP_COLUMNS` adds it here too.
+    """
     score = 28 if played else None
-    return {
-        "game_id": game_id, "season": 2026, "week": week,
+    raw = pd.DataFrame([{
+        # Raw CFBD field names, pre-rename: the normaliser is what turns these
+        # into the frame the rest of the code reads.
+        "id": game_id, "season": 2026, "week": week,
         "home_team": home, "away_team": away,
-        "home_score": score, "away_score": score,
-        "commence_time": f"2026-09-{(week * 7) % 28 + 1:02d}T19:00:00Z",
-    }
+        "home_points": score, "away_points": score,
+        "start_date": f"2026-09-{(week * 7) % 28 + 1:02d}T19:00:00Z",
+        "home_conference": "SEC", "away_conference": "SEC",
+    }])
+    return games_data._normalize_games(raw).iloc[0].to_dict()
 
 
 def test_fetch_upcoming_games_is_a_single_week(monkeypatch):
