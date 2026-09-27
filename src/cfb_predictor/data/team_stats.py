@@ -36,6 +36,22 @@ it, which is what the dashboard does today and why it is out by 2.2-3.2x.
 Note the quarterback special case when reconciling: a QB's `passing.YDS` is the
 *team's* passing total, so a QB must be counted via `passing` or excluded from
 the receiving-side sum, never both.
+
+**Known unresolved.** The live reconciliation does not yet pass. Two distinct
+problems were isolated, one fixed and one open:
+
+- *Fixed.* 42 of the 178 game_ids returned by a week-1 request are absent from
+  the FBS schedule, because the team box score returns every game while
+  `fetch_schedules` filters to `classification="fbs"` (Air Force vs Robert
+  Morris is one). Back-filling those with `requested_week` stacked 84 team-rows
+  on top of the genuine week-1 rows. `attach_schedule_weeks` now drops them.
+- *Open.* The **player** box score over-returns the same way, and its week
+  labelling is not trustworthy either, so the player sum for a single
+  (season, week, team) still spans several games — USC 2023 week 1 reconciles to
+  1620 player yards against a 443 team total. Until that is isolated, do not
+  build a CFB yardage model on this join and do not run the ~330-call backfill.
+  NFL's equivalent identity is verified clean (544/544 exact), so that side is
+  unaffected.
 """
 
 from __future__ import annotations
@@ -167,11 +183,23 @@ def _flatten(raw_games: list, season: int, week: int) -> pd.DataFrame:
 
 
 def attach_schedule_weeks(frame: pd.DataFrame, schedules_df: pd.DataFrame) -> pd.DataFrame:
-    """Replace `requested_week` with each game's real `week` from the schedule.
+    """Give each team-game its real `week` from the schedule, dropping unplaceable rows.
 
     Needed because CFBD's team box score has no week field and its `week` request
-    argument over-returns. Games the schedule does not know about fall back to
-    `requested_week` rather than being dropped.
+    argument over-returns.
+
+    **Rows whose `game_id` is absent from the schedule are dropped, not
+    back-filled with `requested_week`.** Measured 2026-09-27 on 2023 week 1: 42 of
+    178 returned game_ids are not in the FBS schedule, because the team box score
+    returns *every* game while `fetch_schedules` filters to `classification="fbs"`.
+    Air Force vs Robert Morris is one of them. Back-filling those 42 with
+    `requested_week=1` silently stacked 84 team-rows on top of the genuine week-1
+    rows, collapsing 356 rows to 246 distinct (season, week, team) keys and
+    inflating any player sum that joined across them. A game that cannot be placed
+    cannot be reconciled, so it is excluded and counted.
+
+    Returns the frame with a `week` column. `dropped_unplaceable` is attached as an
+    attribute on the returned object for callers that want to log it.
     """
     out = frame.copy()
     if schedules_df.empty or not {"game_id", "week"} <= set(schedules_df.columns):
@@ -180,9 +208,13 @@ def attach_schedule_weeks(frame: pd.DataFrame, schedules_df: pd.DataFrame) -> pd
     lookup = schedules_df[["game_id", "week"]].drop_duplicates(["game_id"]).copy()
     lookup["game_id"] = lookup["game_id"].astype(str)
     out["game_id"] = out["game_id"].astype(str)
-    out = out.drop(columns=["week"], errors="ignore").merge(lookup, on="game_id", how="left")
-    out["week"] = out["week"].fillna(out["requested_week"])
+    placed = out.merge(lookup, on="game_id", how="left")
+    dropped = int(placed["week"].isna().sum())
+    out = placed[placed["week"].notna()].copy()
+    out["week"] = pd.to_numeric(out["week"], errors="coerce").astype("Int64")
+    out.dropped_unplaceable = dropped
     return out
+
 
 
 def _to_number(value):

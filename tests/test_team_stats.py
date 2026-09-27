@@ -108,6 +108,24 @@ def test_the_real_week_comes_from_the_schedule_not_the_request():
     assert "requested_week" in merged.columns, "the requested week is kept for provenance"
 
 
+def test_unplaceable_games_are_dropped_not_backfilled():
+    """The team box score returns non-FBS games the FBS schedule does not know.
+
+    Back-filling them with `requested_week` stacked 84 team-rows onto the real
+    week-1 rows for 2023 week 1, collapsing 356 rows to 246 distinct
+    (season, week, team) keys. A game that cannot be placed cannot be reconciled.
+    """
+    frame = pd.DataFrame([
+        {"game_id": "placed", "season": 2023, "requested_week": 1, "team": "A"},
+        {"game_id": "fcs_game", "season": 2023, "requested_week": 1, "team": "B"},
+    ])
+    schedules = pd.DataFrame([{"game_id": "placed", "week": 1}])
+    merged = team_stats.attach_schedule_weeks(frame, schedules)
+    assert list(merged["team"]) == ["A"]
+    assert merged.dropped_unplaceable == 1
+    assert set(merged["week"]) == {1}
+
+
 def test_opponent_is_reconstructed_by_pivoting_the_two_teams():
     """`GameTeamStatsTeam` carries no `opponent` field either. Each team's
     opponent is the other team in the same game."""
@@ -201,17 +219,18 @@ def test_reconcile_ignores_a_quarterbacks_passing_row():
 @pytest.mark.xfail(
     strict=False,
     reason=(
-        "UNRESOLVED. The offline contract is tested and passing; the live join is not. "
-        "CFBD's player endpoint over-returns the same way the team endpoint does, and "
-        "for 2023 week 1 the two frames disagree about which game belongs to which "
-        "week: the join yields 277 of 356 team rows, and team-games where it does join "
-        "sometimes sum several games' players (USC week 1 reconciles to 1620 player "
-        "yards against a 443 team total). Root cause not yet isolated -- it is either "
-        "`_flatten_player_game_stats` assigning a week from a schedule lookup that "
-        "misses, or both endpoints returning games outside the requested week. Until "
-        "that is fixed do NOT trust a CFB yardage model built on this join, and do not "
-        "run the ~330-call backfill. strict=False so this stays visible rather than "
-        "being quietly deleted."
+        "UNRESOLVED, and it is the *player* side. The offline contract is tested and "
+        "passing; the live join is not. One of two problems is already fixed: 42 of the "
+        "178 game_ids a week-1 request returns are absent from the FBS schedule (the team "
+        "box score returns every game, the schedule filters to classification='fbs'), and "
+        "back-filling those stacked 84 team-rows onto the real week-1 rows. "
+        "attach_schedule_weeks now drops them and reports the count. What remains is that "
+        "the player box score over-returns the same way and its week labelling is "
+        "untrustworthy, so the player sum for one (season, week, team) still spans several "
+        "games -- USC 2023 week 1 reconciles to 1620 player yards against a 443 team "
+        "total. Until that is isolated do NOT trust a CFB yardage model built on this join, "
+        "and do not run the ~330-call backfill. strict=False so this stays visible rather "
+        "than being quietly deleted."
     ),
 )
 def test_cfbd_team_stats_reconciles_against_real_player_data():
