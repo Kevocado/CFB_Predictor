@@ -164,6 +164,31 @@ def record_game_predictions(games: list[dict]) -> int:
         return cursor.rowcount
 
 
+def _present(*values) -> bool:
+    """Whether every value is a real number rather than missing.
+
+    `None or 0` is the wrong instrument for "this probability was never computed".
+    It converts an absent input into a confident zero, and a zero is a *legible*
+    probability: on a two-sided market, `0.0 >= 0.0` resolves to the home side by
+    the accident of `>=`. So a game snapshotted with a spread line but no cover
+    probabilities -- which is what the odds feed yields whenever it has a spread
+    without a matching market -- was recorded as a graded ATS call the model never
+    made, in both directions:
+
+        home 31-24, spread -3.5, cover probs None  -> ats_hit = 1  (fabricated hit)
+        home 20-24, spread -3.5, cover probs None  -> ats_hit = 0  (fabricated miss)
+
+    That is worse here than elsewhere in this codebase, because the output is the
+    track record. Half a market is equally unusable: `0.6` against `None` is not
+    obviously the home side, but it is not a call either, and the same expression
+    reports it as one.
+
+    So presence is required on *every* value a comparison depends on, and a
+    missing one yields no grade rather than a wrong one.
+    """
+    return all(value is not None and not pd.isna(value) for value in values)
+
+
 def _compute_hits(
     home_score: float, away_score: float, home_win_prob: float, away_win_prob: float,
     home_spread_line: float | None, home_cover_prob: float | None, away_cover_prob: float | None,
@@ -173,18 +198,21 @@ def _compute_hits(
     predicted_home_win = home_win_prob >= away_win_prob
     moneyline_hit = int(predicted_home_win == home_win)
 
+    # Grade a market only when the line *and* both sides of the probability pair
+    # are present. See `_present` for why a missing probability must not be
+    # coerced to zero rather than merely being unusual.
     ats_hit = None
-    if home_spread_line is not None and pd.notna(home_spread_line):
+    if _present(home_spread_line) and _present(home_cover_prob, away_cover_prob):
         home_margin = home_score - away_score
         home_covered = home_margin > home_spread_line
-        predicted_home_cover = (home_cover_prob or 0) >= (away_cover_prob or 0)
+        predicted_home_cover = home_cover_prob >= away_cover_prob
         ats_hit = int(predicted_home_cover == home_covered)
 
     total_hit = None
-    if total_line is not None and pd.notna(total_line):
+    if _present(total_line) and _present(over_prob, under_prob):
         actual_total = home_score + away_score
         went_over = actual_total > total_line
-        predicted_over = (over_prob or 0) >= (under_prob or 0)
+        predicted_over = over_prob >= under_prob
         total_hit = int(predicted_over == went_over)
 
     return moneyline_hit, ats_hit, total_hit
@@ -537,11 +565,17 @@ def get_game_verdict(game_id: str) -> dict | None:
         "home_spread_line": float(row["home_spread_line"]) if pd.notna(row["home_spread_line"]) else None,
         "total_line": float(row["total_line"]) if pd.notna(row["total_line"]) else None,
     }
-    if pd.notna(row["ats_hit"]):
-        predicted_home_cover = (row["home_cover_prob"] or 0) >= (row["away_cover_prob"] or 0)
+    # The `hit` flags were written by `_compute_hits`, which already refuses to
+    # grade a market whose probabilities are missing. Guard the re-derivation the
+    # same way, so a row written by an older build cannot report a `predicted`
+    # side that was fabricated here. The two must agree: `hit` is a stored fact,
+    # `predicted` is recomputed, and a disagreement would be a silent contradiction
+    # inside a single verdict object.
+    if pd.notna(row["ats_hit"]) and _present(row["home_cover_prob"], row["away_cover_prob"]):
+        predicted_home_cover = row["home_cover_prob"] >= row["away_cover_prob"]
         verdict["ats"] = {"hit": bool(row["ats_hit"]), "predicted": "home_cover" if predicted_home_cover else "away_cover"}
-    if pd.notna(row["total_hit"]):
-        predicted_over = (row["over_prob"] or 0) >= (row["under_prob"] or 0)
+    if pd.notna(row["total_hit"]) and _present(row["over_prob"], row["under_prob"]):
+        predicted_over = row["over_prob"] >= row["under_prob"]
         verdict["totals"] = {"hit": bool(row["total_hit"]), "predicted": "over" if predicted_over else "under"}
     return verdict
 

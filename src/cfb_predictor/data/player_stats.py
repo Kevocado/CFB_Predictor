@@ -30,8 +30,52 @@ logger = logging.getLogger(__name__)
 # One call covers every FBS team for the season; refresh at most weekly.
 _ROSTER_TTL_SECONDS = 7 * 24 * 60 * 60
 
+
+def is_real_player_id(raw) -> bool:
+    """Whether a CFBD id belongs to a player rather than a team total.
+
+    CFBD puts team totals in the same `athletes` list as players, and gives them
+    a **negative** id and the name " Team". A real CFB athlete id is a positive
+    integer, so the id decides it — the name does not, because a name is a
+    display string CFBD can change and an id cannot become positive by accident.
+
+    One definition, used by the ingest below and by the read path
+    (`drop_team_rows`), because the read-path filter exists to agree with the
+    ingest filter. Two copies of this would agree today and drift the first time
+    one of them was edited.
+    """
+    try:
+        return int(raw) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def drop_team_rows(df):
+    """Remove team-total rows from an already-cached player frame.
+
+    The ingest guard only protects a *fresh* fetch. The VPS mounts
+    `./volumes/cfb-cache`, written before that guard existed, and nothing
+    revisits it — so the live hub served 254 junk rows after the ingest fix
+    landed. This is the read-side half: ingest protects the next fetch, this
+    protects everything already on disk, and each is still right if the other is
+    deleted.
+
+    A frame with no `player_id` column is returned as it came in, so the filter
+    is safe to call from a path nobody has inspected — which is the only way to
+    be sure it is safe to call from two.
+    """
+    if "player_id" not in df.columns:
+        return df
+    keep = df["player_id"].map(is_real_player_id)
+    return df[keep] if (~keep).any() else df
+
+
+# `game_id` is load-bearing, not incidental: a team can play twice in one week
+# and CFBD's `week` argument over-returns, so (season, week, team) is not unique.
+# Reconciling on the week summed both games' players and compared the lot against
+# each single game. Reconciling on `game_id` is exact.
 KEEP_COLUMNS = [
-    "player_id", "player_name", "position", "recent_team", "season", "week",
+    "player_id", "player_name", "position", "recent_team", "season", "week", "game_id",
     "passing_yards", "passing_tds", "rushing_yards", "rushing_tds",
     "receiving_yards", "receiving_tds", "receptions", "targets", "carries",
 ]
@@ -151,11 +195,7 @@ def _flatten_player_game_stats(raw_games: list[dict], games_df: pd.DataFrame, se
                         # is why this is CFB-only and why the same guard there
                         # would be untested.
                         raw_id = athlete.get("id")
-                        try:
-                            is_player = int(raw_id) > 0
-                        except (TypeError, ValueError):
-                            is_player = False
-                        if not is_player:
+                        if not is_real_player_id(raw_id):
                             continue
                         player_id = str(raw_id)
                         key = (game_id, player_id)
@@ -166,6 +206,7 @@ def _flatten_player_game_stats(raw_games: list[dict], games_df: pd.DataFrame, se
                                 "recent_team": school,
                                 "season": season,
                                 "week": week,
+                                "game_id": game_id,
                                 **{col: 0.0 for col in _STAT_COLUMNS},
                                 "targets": float("nan"),
                             }
@@ -189,15 +230,48 @@ def _season_cache_path(season: int):
     return PLAYER_STATS_CACHE_DIR / f"{season}.parquet"
 
 
+def _read_cache(path) -> pd.DataFrame | None:
+    """Cached player stats, or `None` if the cache cannot be trusted.
+
+    The `KEEP_COLUMNS` check is not defensive boilerplate, it is load-bearing.
+    `reconcile_against_players` can only key on `game_id`, because
+    `(season, week, team)` is **not unique** -- a team can play twice in one week
+    and CFBD's `week` argument over-returns, so a week-keyed join summed both
+    games' players and compared the lot against each single game.
+
+    Every player cache written before `game_id` was added to `KEEP_COLUMNS`
+    therefore cannot be reconciled, and a bare `read_parquet` would hand one back
+    with no signal at all. Verified on this machine: `CFB_Predictor/data/cache/
+    player_stats/` held nine parquet files of 12k-34k rows, **none** with a
+    `game_id` column. Same lesson as `team_stats._read_cache`: a cache that
+    cannot tell it is stale is worse than no cache.
+    """
+    if not path.exists():
+        return None
+    try:
+        cached = pd.read_parquet(path)
+    except Exception:
+        return None
+    return cached if set(KEEP_COLUMNS) <= set(cached.columns) else None
+
+
 def fetch_weekly_player_stats(
     seasons: list[int], games_df: pd.DataFrame, force_refresh: bool = False
 ) -> pd.DataFrame:
     frames = []
     for season in seasons:
         path = _season_cache_path(season)
-        if not force_refresh and path.exists():
-            frames.append(pd.read_parquet(path))
-            continue
+        if not force_refresh:
+            cached = _read_cache(path)
+            if cached is not None:
+                frames.append(cached)
+                continue
+            if path.exists():
+                logger.warning(
+                    "player-stats cache for season=%s lacks required columns (missing %s); "
+                    "refetching rather than reconciling on a non-unique key",
+                    season, sorted(set(KEEP_COLUMNS) - set(pd.read_parquet(path).columns)),
+                )
         try:
             season_games = games_df[games_df["season"] == season]
             weeks = sorted(int(w) for w in season_games["week"].dropna().unique())
@@ -206,11 +280,17 @@ def fetch_weekly_player_stats(
             flattened.to_parquet(path)
             frames.append(pd.read_parquet(path))
         except Exception:
-            if path.exists():
+            cached = _read_cache(path)
+            if cached is not None:
                 logger.warning("CFBD player-stats fetch failed for season=%s; serving stale cache", season)
-                frames.append(pd.read_parquet(path))
+                frames.append(cached)
             else:
-                logger.warning("CFBD player-stats fetch failed for season=%s; no cache available, skipping", season)
+                logger.warning(
+                    "CFBD player-stats fetch failed for season=%s and no reconcilable cache "
+                    "is available; skipping. Do NOT fall back to a cache without `game_id` -- "
+                    "it can only be joined on (season, week, team), which is not unique.",
+                    season,
+                )
 
     if not frames:
         return pd.DataFrame(columns=KEEP_COLUMNS)
