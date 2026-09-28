@@ -216,6 +216,30 @@ KEEP_COLUMNS = [
 TARGET_COLUMNS = ["total_yards"]
 
 
+# A hung upstream must not stall a boot task indefinitely. The generated `cfbd`
+# client issues each request with `_request_timeout=None` unless told otherwise,
+# which becomes urllib3 `timeout=None` -- wait forever on a dead socket. That is
+# what stalled the 2026-09-28 production backfill with zero established TCP
+# connections and no file for six minutes: not rate-limiting, not a retry loop,
+# a single socket call with no bound.
+#
+# So every metered call here carries an explicit total timeout. 60 seconds is
+# not measured from that one stall -- one sample is not a latency distribution.
+# It is set an order of magnitude above a healthy response (this endpoint
+# returns a few hundred KB of JSON per week, normally answered in low
+# single-digit seconds) and orders of magnitude below "forever": a hung week
+# now fails in a minute, the seeder reports `outcome=failed` with the cause in
+# `error=`, and the files written so far are kept, so the next run resumes
+# instead of re-billing.
+#
+# Deliberately no retry here. Each attempt may cost a metered call, so the worst
+# case for a full resume is exactly the number of missing season-weeks -- never
+# a multiple of it. Retrying inside this loop would also contradict the seeder's
+# own rule (one attempt per boot, then report), which exists for the same money
+# reason.
+CFBD_REQUEST_TIMEOUT = 60
+
+
 def _client():
     import cfbd
 
@@ -412,7 +436,9 @@ def fetch_team_stats(
             if cached is not None:
                 frames.append(cached)
                 continue
-            raw = api.get_game_team_stats(year=season, week=week)
+            raw = api.get_game_team_stats(
+                year=season, week=week, _request_timeout=CFBD_REQUEST_TIMEOUT
+            )
             frame = _flatten([g.to_dict() for g in raw], season, week)
             # Record an empty week rather than skipping it. Skipping looks harmless
             # and is not: no cache file means the next run re-requests, and most
