@@ -509,8 +509,12 @@ def test_reconcile_says_which_key_it_falls_back_to_when_there_is_no_week():
     with pytest.raises(ValueError) as excinfo:
         team_stats.reconcile_against_players(team, players)
     message = str(excinfo.value)
+    # Assert the remedy phrases specifically, not bare substrings: "game_id" also
+    # appears earlier in the sentence ("without `game_id` on both frames"), so a
+    # bare check passes even if the instruction to supply it is deleted. That
+    # mutant survived the first version of this test.
     assert "attach_schedule_weeks" in message, message
-    assert "game_id" in message, message
+    assert "supply `game_id`" in message, message
     # names the frame that is short, so a caller with two frames knows which to fix
     assert "team_frame" in message, message
 
