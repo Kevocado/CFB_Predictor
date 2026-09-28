@@ -55,6 +55,16 @@ def _connect() -> sqlite3.Connection:
         if column not in existing_cols:
             conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} REAL" if column in ("home_spread_line", "total_line")
                          else f"ALTER TABLE game_predictions ADD COLUMN {column} INTEGER")
+    # Kalshi feed: the predicted distribution behind each frozen snapshot, so the trade hub can
+    # price a strike from the model's own margin/total distribution instead of a point estimate.
+    #
+    # Deliberately NOT a `backfilled` column. Pre-game-ness is already derived, live, by
+    # `_snapshotted_after_kickoff` (snapshotted_at >= commence_time, failing closed): it cannot
+    # drift out of step with the timestamps, and a database written before this change needs no
+    # migration pass over its rows.
+    for column, sql_type in _FEED_COLUMNS.items():
+        if column not in existing_cols:
+            conn.execute(f"ALTER TABLE game_predictions ADD COLUMN {column} {sql_type}")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS player_prop_predictions (
@@ -77,6 +87,28 @@ def _connect() -> sqlite3.Connection:
         # under "unknown" in the summary).
         conn.execute("ALTER TABLE player_prop_predictions ADD COLUMN position TEXT")
     return conn
+
+
+_FEED_COLUMNS = {
+    "predicted_margin": "REAL",
+    "sigma": "REAL",
+    "predicted_total": "REAL",
+    "total_sigma": "REAL",
+    "model_version": "TEXT",
+}
+
+
+def _parse_utc(value: str) -> datetime:
+    """ISO timestamp -> aware UTC datetime. Naive values are UTC (that is how both
+    commence_time and snapshotted_at are written)."""
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _optional_float(value) -> float | None:
+    return None if value is None or pd.isna(value) else float(value)
 
 
 def _require_pre_kickoff(commence_time: str) -> None:
@@ -112,6 +144,8 @@ def record_game_predictions(games: list[dict]) -> int:
             game.get("home_cover_prob"), game.get("away_cover_prob"),
             game.get("over_prob"), game.get("under_prob"),
             game.get("home_spread_line"), game.get("total_line"), game.get("season"), game.get("week"),
+            game.get("predicted_margin"), game.get("sigma"), game.get("predicted_total"),
+            game.get("total_sigma"), game.get("model_version"),
         )
         for game in valid_games
     ]
@@ -121,12 +155,38 @@ def record_game_predictions(games: list[dict]) -> int:
             INSERT OR IGNORE INTO game_predictions
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
                  home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
-                 home_spread_line, total_line, season, week)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 home_spread_line, total_line, season, week,
+                 predicted_margin, sigma, predicted_total, total_sigma, model_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
         return cursor.rowcount
+
+
+def _present(*values) -> bool:
+    """Whether every value is a real number rather than missing.
+
+    `None or 0` is the wrong instrument for "this probability was never computed".
+    It converts an absent input into a confident zero, and a zero is a *legible*
+    probability: on a two-sided market, `0.0 >= 0.0` resolves to the home side by
+    the accident of `>=`. So a game snapshotted with a spread line but no cover
+    probabilities -- which is what the odds feed yields whenever it has a spread
+    without a matching market -- was recorded as a graded ATS call the model never
+    made, in both directions:
+
+        home 31-24, spread -3.5, cover probs None  -> ats_hit = 1  (fabricated hit)
+        home 20-24, spread -3.5, cover probs None  -> ats_hit = 0  (fabricated miss)
+
+    That is worse here than elsewhere in this codebase, because the output is the
+    track record. Half a market is equally unusable: `0.6` against `None` is not
+    obviously the home side, but it is not a call either, and the same expression
+    reports it as one.
+
+    So presence is required on *every* value a comparison depends on, and a
+    missing one yields no grade rather than a wrong one.
+    """
+    return all(value is not None and not pd.isna(value) for value in values)
 
 
 def _compute_hits(
@@ -138,18 +198,21 @@ def _compute_hits(
     predicted_home_win = home_win_prob >= away_win_prob
     moneyline_hit = int(predicted_home_win == home_win)
 
+    # Grade a market only when the line *and* both sides of the probability pair
+    # are present. See `_present` for why a missing probability must not be
+    # coerced to zero rather than merely being unusual.
     ats_hit = None
-    if home_spread_line is not None and pd.notna(home_spread_line):
+    if _present(home_spread_line) and _present(home_cover_prob, away_cover_prob):
         home_margin = home_score - away_score
         home_covered = home_margin > home_spread_line
-        predicted_home_cover = (home_cover_prob or 0) >= (away_cover_prob or 0)
+        predicted_home_cover = home_cover_prob >= away_cover_prob
         ats_hit = int(predicted_home_cover == home_covered)
 
     total_hit = None
-    if total_line is not None and pd.notna(total_line):
+    if _present(total_line) and _present(over_prob, under_prob):
         actual_total = home_score + away_score
         went_over = actual_total > total_line
-        predicted_over = (over_prob or 0) >= (under_prob or 0)
+        predicted_over = over_prob >= under_prob
         total_hit = int(predicted_over == went_over)
 
     return moneyline_hit, ats_hit, total_hit
@@ -224,6 +287,8 @@ def record_resolved_game_predictions(games: list[dict]) -> int:
             game.get("over_prob"), game.get("under_prob"),
             game.get("home_spread_line"), game.get("total_line"), game.get("season"), game.get("week"),
             1, int(game["actual_home_score"]), int(game["actual_away_score"]), moneyline_hit, ats_hit, total_hit,
+            game.get("predicted_margin"), game.get("sigma"), game.get("predicted_total"),
+            game.get("total_sigma"), game.get("model_version"),
         ))
     with contextlib.closing(_connect()) as conn, conn:
         cursor = conn.executemany(
@@ -232,8 +297,9 @@ def record_resolved_game_predictions(games: list[dict]) -> int:
                 (game_id, home_team, away_team, commence_time, snapshotted_at,
                  home_win_prob, away_win_prob, home_cover_prob, away_cover_prob, over_prob, under_prob,
                  home_spread_line, total_line, season, week,
-                 resolved, actual_home_score, actual_away_score, moneyline_hit, ats_hit, total_hit)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 resolved, actual_home_score, actual_away_score, moneyline_hit, ats_hit, total_hit,
+                 predicted_margin, sigma, predicted_total, total_sigma, model_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -274,6 +340,120 @@ def get_track_record() -> dict:
     n_rebuilt = int(rebuilt.sum())
     resolved_games = resolved_games[~rebuilt] if not resolved_games.empty else resolved_games
     return {"games": {**_summarize_games(resolved_games), "n_rebuilt": n_rebuilt}, "player_props": _summarize_player_props(resolved_props)}
+
+
+def get_feed_predictions(now: datetime | None = None) -> list[dict]:
+    """Frozen pre-game snapshots for games that have not started yet: the rows the trade hub may
+    compare against Kalshi prices.
+
+    Two exclusions, and they are the same question asked twice. `resolved = 0` drops games that
+    have already been graded; `_snapshotted_after_kickoff` drops rows written at or after kickoff
+    (PR #1's `rebuilt` rule), which is the leakage guard from spec 5a. A row that fails either is
+    never served, and an unparseable timestamp is treated as rebuilt, so the filter fails closed.
+    """
+    now = now or datetime.now(timezone.utc)
+    with contextlib.closing(_connect()) as conn:
+        rows = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 0", conn)
+    feed = []
+    for _, row in rows.iterrows():
+        if _snapshotted_after_kickoff(row["snapshotted_at"], row["commence_time"]):
+            continue
+        try:
+            start = _parse_utc(row["commence_time"])
+            snapshotted = _parse_utc(row["snapshotted_at"])
+        except (TypeError, ValueError):
+            continue
+        if start <= now:
+            continue
+        feed.append({
+            "game_id": row["game_id"],
+            "season": None if pd.isna(row["season"]) else int(row["season"]),
+            "week": None if pd.isna(row["week"]) else int(row["week"]),
+            "home": row["home_team"],
+            "away": row["away_team"],
+            "start_utc": start.isoformat(),
+            "p_home": float(row["home_win_prob"]),
+            "margin_mu": _optional_float(row["predicted_margin"]),
+            "sigma": _optional_float(row["sigma"]),
+            "total_mu": _optional_float(row["predicted_total"]),
+            "total_sigma": _optional_float(row["total_sigma"]),
+            "home_spread_line": _optional_float(row["home_spread_line"]),
+            "total_line": _optional_float(row["total_line"]),
+            "model_version": row["model_version"] if isinstance(row["model_version"], str) else None,
+            "snapshotted_at": snapshotted.isoformat(),
+            # Always False here -- that is what the rebuilt filter above guarantees. The key stays
+            # because the hub's parser rejects a truthy value, and False is the honest statement.
+            "backfilled": False,
+        })
+    return sorted(feed, key=lambda r: (r["start_utc"], r["game_id"]))
+
+
+def _calibration_buckets(pairs: list[tuple[float, int]], n_buckets: int) -> list[dict]:
+    buckets = []
+    for i in range(n_buckets):
+        lo, hi = i / n_buckets, (i + 1) / n_buckets
+        last = i == n_buckets - 1
+        inside = [(p, y) for p, y in pairs if lo <= p < hi or (last and p == 1.0)]
+        buckets.append({
+            "lo": round(lo, 4),
+            "hi": round(hi, 4),
+            "n": len(inside),
+            "mean_prob": sum(p for p, _ in inside) / len(inside) if inside else None,
+            "hit_rate": sum(y for _, y in inside) / len(inside) if inside else None,
+        })
+    return buckets
+
+
+# 4 buckets, not 10, ruled 2026-09-27. Same change, same reasoning, and the same commit shape as
+# NFL_Predictor -- the two feeds must publish the same bucket layout or the hub's gate arithmetic
+# differs by sport, which would be worse than either value on its own.
+#
+# The trade hub gates an edge on `n >= calibration_min_n` in the bucket the edge's own probability
+# falls in, and it needs EVERY bucket to clear that bar before admitting anything. So the settled
+# contracts needed are `n_buckets x calibration_min_n`: at 10 x 20 that is 200, while the hub's
+# reviewer renders a verdict at 100. The product was twice as strict about admitting an edge as it
+# was about judging one, and on the real distribution (42 settled for CFB winner) the winner gate
+# admitted nothing at all at 100 settled.
+#
+# At 4 x 20 that is 80, under the reviewer's bar, and the same measurement shows 4 buckets admitting
+# 95% / 82% / 97% of edge mass at 100 settled where 10 admitted 0% / 46% / 66%.
+CALIBRATION_N_BUCKETS = 4
+
+
+def get_calibration(n_buckets: int = CALIBRATION_N_BUCKETS) -> dict:
+    """Reliability buckets over resolved, genuinely pre-game snapshots: home win probability vs
+    home won, home cover probability vs covered (at the recorded line), over probability vs went
+    over. Ties and pushes are left out.
+
+    Rebuilt rows are excluded by the same predicate the feed uses, so the buckets the hub
+    calibrates against and the rows it prices come from the same population.
+    """
+    with contextlib.closing(_connect()) as conn:
+        rows = pd.read_sql("SELECT * FROM game_predictions WHERE resolved = 1", conn)
+    winner: list[tuple[float, int]] = []
+    spread: list[tuple[float, int]] = []
+    total: list[tuple[float, int]] = []
+    for _, row in rows.iterrows():
+        if _snapshotted_after_kickoff(row["snapshotted_at"], row["commence_time"]):
+            continue
+        home, away = row["actual_home_score"], row["actual_away_score"]
+        if pd.isna(home) or pd.isna(away):
+            continue
+        margin, points = float(home - away), float(home + away)
+        if margin != 0:
+            winner.append((float(row["home_win_prob"]), int(margin > 0)))
+        line, prob = row["home_spread_line"], row["home_cover_prob"]
+        if pd.notna(line) and pd.notna(prob) and margin != float(line):
+            spread.append((float(prob), int(margin > float(line))))
+        line, prob = row["total_line"], row["over_prob"]
+        if pd.notna(line) and pd.notna(prob) and points != float(line):
+            total.append((float(prob), int(points > float(line))))
+    return {
+        "n_buckets": n_buckets,
+        "winner": _calibration_buckets(winner, n_buckets),
+        "spread": _calibration_buckets(spread, n_buckets),
+        "total": _calibration_buckets(total, n_buckets),
+    }
 
 
 def _summarize_games(resolved: pd.DataFrame) -> dict:
@@ -385,11 +565,17 @@ def get_game_verdict(game_id: str) -> dict | None:
         "home_spread_line": float(row["home_spread_line"]) if pd.notna(row["home_spread_line"]) else None,
         "total_line": float(row["total_line"]) if pd.notna(row["total_line"]) else None,
     }
-    if pd.notna(row["ats_hit"]):
-        predicted_home_cover = (row["home_cover_prob"] or 0) >= (row["away_cover_prob"] or 0)
+    # The `hit` flags were written by `_compute_hits`, which already refuses to
+    # grade a market whose probabilities are missing. Guard the re-derivation the
+    # same way, so a row written by an older build cannot report a `predicted`
+    # side that was fabricated here. The two must agree: `hit` is a stored fact,
+    # `predicted` is recomputed, and a disagreement would be a silent contradiction
+    # inside a single verdict object.
+    if pd.notna(row["ats_hit"]) and _present(row["home_cover_prob"], row["away_cover_prob"]):
+        predicted_home_cover = row["home_cover_prob"] >= row["away_cover_prob"]
         verdict["ats"] = {"hit": bool(row["ats_hit"]), "predicted": "home_cover" if predicted_home_cover else "away_cover"}
-    if pd.notna(row["total_hit"]):
-        predicted_over = (row["over_prob"] or 0) >= (row["under_prob"] or 0)
+    if pd.notna(row["total_hit"]) and _present(row["over_prob"], row["under_prob"]):
+        predicted_over = row["over_prob"] >= row["under_prob"]
         verdict["totals"] = {"hit": bool(row["total_hit"]), "predicted": "over" if predicted_over else "under"}
     return verdict
 

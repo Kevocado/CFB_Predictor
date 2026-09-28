@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 
 import pandas as pd
@@ -175,6 +176,49 @@ def _load_models_cached() -> dict:
     return manifest.load_models()
 
 
+# A player on a team with no current-season box score yet -- week 1, or a
+# bye-to-opener gap -- has no usage history to roll. That case previously got a
+# placeholder dict keyed `passing_yards`, `rushing_yards`, `receiving_yards`,
+# `targets`, `carries`, `receptions`. But `predict_props` does
+# `feature_row.reindex(feature_cols)`, and `feature_cols` is
+# `passing_yards_roll, rushing_yards_roll, ...`. None of those keys matched, so
+# every one reindexed to NaN and `.fillna(0)` produced the all-zero origin -- a
+# point in feature space the model was never trained on. What came back was the
+# intercept, not a prediction: on the 2026-09-27 Azure build, 71% of 2112 rows
+# shared a single `anytime_td_prob` as a result.
+#
+# Two things are wrong and both are fixed below. The keys must be derived from
+# PLAYER_FEATURE_COLUMNS so they cannot drift again. And the values must be a
+# plausible in-season rate rather than zeros -- an all-zero row is the origin
+# whatever it happens to be keyed with.
+#
+# `_ROSTER_FALLBACK_RATES` is a deliberately unremarkable CFB per-game rate. It
+# is a placeholder for a player we know nothing about, not a claim about that
+# player, and the two leagues' sibling route skips these players entirely
+# instead. Prefer skipping if the branch ever grows a way to do so honestly.
+_ROSTER_FALLBACK_RATES: dict[str, float] = {
+    "passing_yards_roll": 180.0,
+    "rushing_yards_roll": 40.0,
+    "receiving_yards_roll": 30.0,
+    "targets_roll": 4.0,
+    "carries_roll": 8.0,
+    "receptions_roll": 3.0,
+}
+
+
+def _roster_fallback_feature_row() -> pd.Series:
+    """Feature row for a roster player with no usage history.
+
+    Keyed off `PLAYER_FEATURE_COLUMNS` so the key set cannot drift from what
+    `predict_props` reads. Any column without an explicit placeholder rate gets a
+    neutral non-zero default, because a zero row is the origin the comment above
+    is about.
+    """
+    return pd.Series(
+        {column: _ROSTER_FALLBACK_RATES.get(column, 1.0) for column in player_usage.PLAYER_FEATURE_COLUMNS}
+    )
+
+
 def _load_models_or_503() -> dict:
     """manifest.load_models() raises FileNotFoundError when no manifest has
     ever been trained -- turn that into a friendly 503 instead of letting it
@@ -290,6 +334,7 @@ def _predict_game_from_models(
     result["predicted_total"] = predicted_total
     result["sigma"] = models["sigma"]
     result["total_sigma"] = models["total_sigma"]
+    result["model_version"] = models.get("model_version")
     return result
 
 
@@ -321,10 +366,18 @@ def _load_player_history(season: int) -> pd.DataFrame:
         current_df = player_stats.fetch_weekly_player_stats(
             [season], games_df, force_refresh=_player_stats_needs_refresh(season, games_df)
         )
-        return pd.concat([historical_df, current_df], ignore_index=True)
+        # Read-side guard. player_stats drops these rows at ingest, but the
+        # cache on the VPS was written before that guard existed and nothing
+        # revisits it, so the live hub kept serving them after the ingest fix
+        # landed. This also covers /players/{season}/{week}/props, which reads
+        # the same frame, and player_hub's leaderboards, built from it too.
+        return player_stats.drop_team_rows(
+            pd.concat([historical_df, current_df], ignore_index=True))
     all_seasons = history_seasons + [season]
     games_df = games_data.load_training_data(all_seasons)
-    return player_stats.fetch_weekly_player_stats(all_seasons, games_df)
+    # Read-side guard, same reason as the branch above.
+    return player_stats.drop_team_rows(
+        player_stats.fetch_weekly_player_stats(all_seasons, games_df))
 
 
 @router.get("/games")
@@ -520,7 +573,7 @@ def _get_player_props_live(season: int, week: int):
         for _, player in latest_players.iterrows():
             try:
                 if "roster_" in str(player["player_id"]) or (player["player_id"].isdigit() and not (player_history["player_id"] == player["player_id"]).any()):
-                    feature_row = pd.Series({"attempts": 5.0, "completions": 3.0, "passing_yards": 40.0, "carries": 2.0, "rushing_yards": 10.0, "receptions": 2.0, "receiving_yards": 20.0, "targets": 3.0})
+                    feature_row = _roster_fallback_feature_row()
                 else:
                     feature_row = player_usage.build_features_for_player(player["player_id"], player_history)
                 
@@ -551,6 +604,24 @@ def _get_player_props_live(season: int, week: int):
 @router.get("/track-record")
 def get_track_record():
     return store.get_track_record()
+
+
+@router.get("/kalshi-feed")
+def get_kalshi_feed():
+    """Read-only feed for the Algo Trade Hub: frozen pre-game snapshots for games that have not
+    kicked off, plus reliability buckets over graded pre-game snapshots.
+
+    Served from the tracking database only, so it never recomputes a prediction: a live forecast
+    is a different number from the snapshot the hub graded, and recomputing would swap the series
+    out from under the calibration check with no error anywhere.
+    """
+    return {
+        "sport": "cfb",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "lead_hours": SNAPSHOT_LEAD_HOURS,
+        "games": store.get_feed_predictions(),
+        "calibration": store.get_calibration(),
+    }
 
 
 @router.get("/games/{game_id}/verdict")
@@ -782,9 +853,38 @@ def _attach_game_id(stats_df: pd.DataFrame, games_df: pd.DataFrame) -> pd.DataFr
     return stats_df.merge(team_game, on=["season", "week", "recent_team"], how="inner")
 
 
+# How close to kickoff a game's prediction is frozen. The first snapshot
+# inside this window is kept forever (INSERT OR IGNORE), so it is the one the
+# track record grades and the Kalshi feed serves. 48h puts Saturday games'
+# snapshots on Thursday, after the previous Saturday's results are in.
+SNAPSHOT_LEAD_HOURS = float(os.getenv("SNAPSHOT_LEAD_HOURS", "48"))
+
+
+def _games_to_snapshot(season: int, week: int, now: datetime, lead_hours: float | None = None) -> pd.DataFrame:
+    """Upcoming games from this week and next whose kickoff is within the
+    lead window. Next week is included because current_season_and_week()
+    rolls over on the date of week 1's first kickoff, not on a fixed
+    football-week boundary.
+
+    The window filters on the UPPER bound only: past games still reach
+    `record_game_predictions`, which rejects them itself, and the tick's own
+    test depends on that.
+    """
+    lead = timedelta(hours=SNAPSHOT_LEAD_HOURS if lead_hours is None else lead_hours)
+    frames = [f for f in (games_data.fetch_upcoming_games(season, wk) for wk in (week, week + 1)) if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    games = pd.concat(frames, ignore_index=True)
+    kickoff = pd.to_datetime(games["gameday"], utc=True, errors="coerce")
+    horizon = pd.Timestamp(now + lead)
+    # A NaT kickoff cannot be placed relative to the window, and snapshotting it would freeze a
+    # prediction at an unknown distance from kickoff.
+    return games[kickoff.notna() & (kickoff <= horizon)].drop_duplicates("game_id").reset_index(drop=True)
+
+
 def background_tracking_tick(season: int, week: int) -> None:
-    """Snapshot this week's upcoming-game (and player-prop) predictions,
-    then reconcile anything now resolved. Called on a timer from
+    """Snapshot upcoming-game (and player-prop) predictions inside the lead
+    window, then reconcile anything now resolved. Called on a timer from
     api/main.py's lifespan."""
     try:
         models = _load_models_cached()
@@ -792,7 +892,7 @@ def background_tracking_tick(season: int, week: int) -> None:
         logger.warning("background_tracking_tick skipped: %s", exc)
         return
 
-    games = games_data.fetch_upcoming_games(season, week)
+    games = _games_to_snapshot(season, week, datetime.now(timezone.utc))
     if not games.empty:
         history = _load_game_history(season)
         odds_df = sportsbook_api.fetch_game_odds(games[["home_team", "away_team"]])
@@ -809,7 +909,7 @@ def background_tracking_tick(season: int, week: int) -> None:
                         "game_id": game["game_id"], "home_team": game["home_team"], "away_team": game["away_team"],
                         "commence_time": str(game["gameday"]),
                         "home_spread_line": spread_line, "total_line": total_line,
-                        "season": season, "week": week,
+                        "season": season, "week": int(game["week"]) if pd.notna(game.get("week")) else week,
                         **pred,
                     }
                 )
@@ -822,8 +922,13 @@ def background_tracking_tick(season: int, week: int) -> None:
             logger.exception("record_game_predictions failed")
 
         try:
+            # THIS week's games only. `_get_player_props_live(season, week)` is this week's prop feed
+            # (it can fall back to the current week), while `games` also holds next week's -- so a
+            # team playing in both had its prop stored under next week's game_id, and
+            # `record_player_prop_predictions` is INSERT OR IGNORE, which would freeze that wrong
+            # snapshot forever.
             team_to_game = {}
-            for _, g in games.iterrows():
+            for _, g in games[games["week"] == week].iterrows():
                 team_to_game[g["home_team"]] = g["game_id"]
                 team_to_game[g["away_team"]] = g["game_id"]
             prop_rows = []
