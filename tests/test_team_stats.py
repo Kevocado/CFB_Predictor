@@ -363,23 +363,23 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
         f"only {within_ten:.1%} of {len(out)} team-games reconcile within 10 yards "
         f"(was 29.4% before the game_id fix); max {absolute.max()}")
     assert absolute.median() == 0, f"median abs diff {absolute.median()}, was 336 before the fix"
-    # No bound on the maximum, deliberately, and **this p99 is a smoke test rather
-    # than a guard on the distribution** -- worth being straight about, because
-    # mutation-verifying shows swapping it back to `absolute.max() <= 35` leaves
-    # this file green. It passes because this test loads 2023 week 1, where the worst
-    # case is 29 yards. Both bounds are satisfied by that one week; neither says
-    # anything about the source.
+    # **No bound on the maximum.** Earlier versions of this file asserted
+    # `absolute.max() <= 35`, then a p99 <= 60, then claimed in a comment that the max
+    # bound had been removed while it was still there. All three states existed here
+    # at some point, which is why the comment is this blunt: the assertion that used
+    # to be in this spot was removed, not loosened, and the removal is the point.
     #
-    # What actually pins the tail is the 22-season measurement in the module
-    # docstring (p99 54, max 550), which cannot run in CI because it would need the
-    # 351-call CFBD backfill. So the assertions below are: the typical disagreement
-    # is nil, the bulk of the tail is short, and the week-keyed join fails all three
-    # catastrophically (29.4% within 10, median 336, max 1177). That is a real
-    # regression guard on the join fix, and it is not a claim about CFBD's accuracy.
-    assert absolute.max() <= 35, (
-        f"p99 abs diff is {absolute.quantile(0.99)}; the 22-season p99 is 54 and a "
-        f"join fault would blow this out rather than shift it")
-
+    # A bound the source does not honour is not a weaker assertion, it is a false one
+    # that passes on a lucky week and misleads on an unlucky one. At 22 seasons the
+    # max is 337 (2004) and 92.4% are within 10 -- so a 35-yard bound is false by an
+    # order of magnitude, and it survived review because this test only loads
+    # 2023 week 1, where the worst case is 29.
+    #
+    # What this test *does* guard is the join fix, and it guards it well: a week-keyed
+    # join fails every one of these three (29.4% within 10, median 336, max 1177).
+    # The 22-season figures cannot run in CI -- they need the 351-call CFBD backfill --
+    # so they live in the module docstring, and the honesty about what is and is not
+    # pinned is deliberate.
 
 def test_reconcile_keys_on_the_game_not_the_week():
     """A team can play twice in one week, and CFBD's `week` argument over-returns,
@@ -700,3 +700,66 @@ def test_reconcile_raises_a_useful_error_when_the_player_team_column_is_absent_e
 
     with pytest.raises(ValueError, match="team"):
         team_stats.reconcile_against_players(team, players)
+
+
+def test_a_zero_total_yards_with_non_zero_components_is_treated_as_missing():
+    """CFBD ships `totalYards: 0` for real team-games whose components sum to hundreds.
+
+    48 team-games across 2004-2025 are recorded at *zero* total yards while CFBD's own
+    `netPassingYards + rushingYards` for the same row totals in the hundreds — Hawai'i
+    2007 is recorded at 0 total yards in a game it won 63-? with 577 by CFBD's own
+    numbers. A team that played cannot have gained zero total yards, so the zero is a
+    missing value wearing a plausible number.
+
+    The guard was `.notna()`, and `0.0` is not NA. It was not cosmetic: those rows were
+    the entire basis of the "max 550, the maximum is unbounded" claim in the module
+    docstring, because the single largest residual in 22 seasons was a team-game at
+    `total_yards = 0` against a player sum of 550. Excluding them the real worst case
+    is 337 and the real p99 is 50.
+    """
+    frame = pd.DataFrame([{
+        "game_id": "1", "season": 2007, "requested_week": 1, "team": "Hawaii",
+        # CFBD's own components say 577. The total it shipped says 0.
+        "total_yards": 0.0, "net_passing_yards": 540.0, "rushing_yards": 37.0,
+    }])
+
+    out = team_stats.add_total_yards(frame)
+
+    assert out["total_yards"].iloc[0] == 577.0, (
+        f"a zero total with 577 yards of components must be rebuilt from them, got "
+        f"{out['total_yards'].iloc[0]}"
+    )
+
+
+def test_a_genuine_zero_total_is_still_zero():
+    """The `> 0` guard must not swallow a real zero.
+
+    A team that never touched the ball downfield *and* gained no rushing yards is
+    vanishingly rare but not impossible, and if it happens the components will be zero
+    too, so the fallback reconstructs 0 anyway. This pins that the two paths agree
+    rather than leaving it to arithmetic.
+    """
+    frame = pd.DataFrame([{
+        "game_id": "1", "season": 2023, "requested_week": 1, "team": "X",
+        "total_yards": 0.0, "net_passing_yards": 0.0, "rushing_yards": 0.0,
+    }])
+
+    assert team_stats.add_total_yards(frame)["total_yards"].iloc[0] == 0.0
+
+
+def test_a_genuine_non_zero_total_is_still_preferred_over_the_sum():
+    """A fixture where the two candidates differ, so the preference is observable.
+
+    The existing test for this uses `total_yards=550, net=308, rush=242` — and
+    `308 + 242 == 550`, so both candidates are identical and the test cannot tell
+    "prefers the supplied value" from "always reconstructs". That is the recurring
+    defect class: asserting that a value was produced rather than that it was right.
+    """
+    frame = pd.DataFrame([{
+        "game_id": "1", "season": 2023, "requested_week": 1, "team": "X",
+        "total_yards": 550.0, "net_passing_yards": 300.0, "rushing_yards": 200.0,
+    }])
+
+    out = team_stats.add_total_yards(frame)
+
+    assert out["total_yards"].iloc[0] == 550.0, "CFBD's own total must win when it is present"

@@ -33,20 +33,34 @@ Reconciliation constraint. Because both sides come from the same game payload,
 **not exactly, and not to a bounded error**. Measured 2026-09-28 over the full
 2004-2025 backfill -- 42,190 team-games, 42,172 with a comparable player sum:
 
-| | 22 seasons | 2023 week 1 alone |
+**Which population this is.** The 22-season column is the frame **before**
+`attach_schedule_weeks` -- the population `reconcile_against_players` is actually given when
+the join key is `game_id`, since the week is not consulted. On the *attach* path the same
+backfill reconciles 36,515 team-games (13.4% fewer), 59.2% exact, 91.9% within 10, p99 61,
+max 550. Neither figure is wrong; they are different populations, and quoting one without
+saying which is how the one-week tolerance came to look universal.
+
+| | 22 seasons, pre-attach | 2023 week 1 alone |
 |---|---|---|
 | exact (`diff == 0`) | 60.0% | 59.2% |
-| within 10 yards | 92.3% | 95.6% |
-| within 35 yards | 98.3% | 99.3% |
+| within 10 yards | 92.4% | 95.6% |
+| within 35 yards | 98.4% | 99.3% |
 | median abs diff | 0.00 | 0.00 |
-| mean abs diff | 3.77 | 1.62 |
-| p90 / p99 abs diff | 8.00 / 54.00 | 5.00 / 12.00 |
-| **max abs diff** | **550.0** | 29.0 |
+| mean abs diff | 3.39 | 1.62 |
+| p90 / p99 abs diff | 7.00 / 50.00 | 5.00 / 12.00 |
+| max abs diff | 337.0 (2004) | 29.0 |
 
 **The maximum is not bounded, and any claim that it is was measured on too little
 data.** An earlier version of this file asserted "95% within 10 yards, median 0,
 maximum 35" -- true for 2023 week 1, and false twice over at 22-season scale
-(92.3%, and 550 in 2007). The error was extrapolating one week of one season.
+(92.4% within 10, and a worst case of 337). The error was extrapolating one week of
+one season.
+
+**A third correction, to the correction above.** An intermediate version reported "max 550"
+as evidence that the maximum is unbounded. That number was an artefact of `add_total_yards`
+accepting CFBD's `totalYards: 0` as real: the largest residual in 22 seasons was a
+team-game recorded at *zero* total yards against a player sum of 550 -- a missing value,
+not a disagreement. With that fixed, the table above is the measurement.
 
 That earlier figure of "355 of 356, median error 0.00, sole outlier Robert Morris
 at -14" was **wrong on all three counts** -- it was measured on the broken
@@ -394,7 +408,19 @@ def add_total_yards(frame: pd.DataFrame) -> pd.DataFrame:
     components = [column for column in ("net_passing_yards", "rushing_yards") if column in out.columns]
     if len(components) == 2:
         fallback = out[components[0]] + out[components[1]]
-        out["total_yards"] = out["total_yards"].where(out["total_yards"].notna(), fallback)
+        # `> 0`, not `.notna()`. CFBD ships `totalYards: 0` for 48 team-games across
+        # 2004-2025 whose own components sum to hundreds -- Hawai'i 2007 is recorded
+        # at 0 total yards in a game it won 63-? with 577 by CFBD's own numbers. A
+        # team that played cannot have gained zero total yards, so a zero here is a
+        # missing value wearing a plausible number, which is the same shape as every
+        # other defect this reconciliation exists to catch.
+        #
+        # It was not cosmetic. Those rows were the entire basis of the "the maximum is
+        # not bounded -- max 550" claim in this module's docstring: the largest residual
+        # in 22 seasons was `total_yards = 0` against a player total of 550, i.e. a
+        # missing value rather than a disagreement between two records. With this fixed
+        # the real figures are p99 50 and max 337.
+        out["total_yards"] = out["total_yards"].where(out["total_yards"].fillna(0) > 0, fallback)
     return out
 
 

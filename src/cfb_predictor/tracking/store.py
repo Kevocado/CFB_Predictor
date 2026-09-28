@@ -462,8 +462,30 @@ def _summarize_games(resolved: pd.DataFrame) -> dict:
             "n_resolved": 0, "pct_moneyline_correct": None, "pct_ats_correct": None,
             "pct_totals_correct": None, "weekly_trend": [],
         }
-    ats = resolved[resolved["ats_hit"].notna()]
-    totals = resolved[resolved["total_hit"].notna()]
+    # A stored hit flag is not on its own evidence of a graded market. Rows written
+    # by the pre-`_present` build carry an `ats_hit` for games where the cover
+    # probabilities were never computed, and filtering on `notna()` alone counts
+    # those fabrications in `pct_ats_correct` -- the headline number a reader judges
+    # the model by. `get_game_verdict` already refuses to report a `predicted` side
+    # for exactly these rows, so without this the per-game view and the aggregate
+    # give opposite answers about the same game.
+    #
+    # The data migration that would repair the stored flags is separate; until it
+    # runs, excluding the rows here is what keeps the aggregate honest.
+    def _pair_present(*columns: str) -> pd.Series:
+        """Row-wise `all(_present(...))`, for filtering a frame.
+
+        `_present` is scalar; iterating it with Series arguments would make
+        `pd.isna` return a Series and blow up on truthiness. This is the same rule
+        expressed over columns.
+        """
+        mask = pd.Series(True, index=resolved.index)
+        for column in columns:
+            mask &= resolved[column].notna()
+        return mask
+
+    ats = resolved[resolved["ats_hit"].notna() & _pair_present("home_cover_prob", "away_cover_prob")]
+    totals = resolved[resolved["total_hit"].notna() & _pair_present("over_prob", "under_prob")]
 
     weekly_trend = []
     with_week = resolved[resolved["week"].notna()]

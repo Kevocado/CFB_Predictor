@@ -68,10 +68,38 @@ def main() -> int:
     if args.from_year > args.to_year:
         parser.error(f"--from-year {args.from_year} is after --to-year {args.to_year}")
 
-    _load_api_key()
-    if not os.environ.get("CFBD_API_KEY", "").strip():
-        print("CFBD_API_KEY is not set and was not found in .env -- cannot fetch.", file=sys.stderr)
-        return 2
+    # Both of these are money. CFBD bills per call, and a call is made *before* the
+    # response is known to be valid, so a nonsense week is a billed call that returns
+    # nothing. `--weeks 0 -1 99` was three wasted calls and three junk cache files
+    # (`2023_wk-1.parquet`), and a duplicated week is one call but appends the cached
+    # frame twice, so the caller gets double rows and a `pairs` count that overstates
+    # the cost.
+    out_of_range = [week for week in args.weeks if not 1 <= week <= 16]
+    if out_of_range:
+        parser.error(
+            f"--weeks must be between 1 and 16 (CFBD's parameter range); got {out_of_range}. "
+            f"Each out-of-range week would be a billed call that returns nothing."
+        )
+    duplicates = sorted({week for week in args.weeks if args.weeks.count(week) > 1})
+    if duplicates:
+        parser.error(
+            f"--weeks contains duplicates {duplicates}. That costs no extra API call but "
+            f"appends the cached frame once per occurrence, so every row comes back doubled."
+        )
+
+    # A dry run needs no key. It reads the cache directory and prints a plan; it cannot
+    # spend anything whatever the environment looks like, and demanding a secret to
+    # find that out is a barrier with no upside. Only `--execute` requires one, and it
+    # checks immediately before it would spend.
+    if args.execute:
+        _load_api_key()
+        if not os.environ.get("CFBD_API_KEY", "").strip():
+            print(
+                "CFBD_API_KEY is not set and was not found in .env -- cannot fetch. "
+                "(A dry run needs no key; pass --execute to spend quota.)",
+                file=sys.stderr,
+            )
+            return 2
 
     from cfb_predictor.data import team_stats
 
