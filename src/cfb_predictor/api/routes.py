@@ -586,6 +586,31 @@ def _get_player_props_live(season: int, week: int):
                     "player_name": player["player_name"],
                     "recent_team": player["recent_team"],
                     "position": player["position"],
+                    # Always None, and that is the correct answer, not a
+                    # placeholder waiting to be filled in. CFBD's
+                    # game-player-stats endpoint has no starter field at all --
+                    # its athlete objects carry exactly `id`, `name`, `stat`
+                    # (verified three ways on 2026-09-28; the full evidence and
+                    # the two refuted heuristics are recorded at the athlete
+                    # flatten in data/player_stats.py, which is where a future
+                    # session would come to "fix" this).
+                    #
+                    # `None` means "this sport has no depth-chart data" and the UI
+                    # renders a visible "Projected order -- no depth-chart feed"
+                    # line. `False` means "this player is known to be on the
+                    # bench" and renders a bench row -- a claim about data this
+                    # project does not have, which is why a failed depth-chart
+                    # fetch in the NFL sibling is None for the same reason.
+                    # Never "fix" this to False, and never derive it from list
+                    # position in the athletes array or from mere appearance in
+                    # the box score: both are refuted, with numbers, in the
+                    # comment named above.
+                    #
+                    # The pair is emitted together so a shared frontend can read
+                    # `is_starter` and `depth_slot` off either sport without a
+                    # per-sport branch.
+                    "is_starter": None,
+                    "depth_slot": None,
                     **props,
                 })
             except Exception as player_err:

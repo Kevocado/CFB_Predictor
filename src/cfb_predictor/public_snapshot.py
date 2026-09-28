@@ -51,6 +51,50 @@ def _build_week(season: int, week: int) -> dict:
     return {"games": games, "predictions": predictions, "player_props": player_props}
 
 
+def _prop_key_signature(
+    season: int,
+    current_week: int,
+    weeks: dict[str, dict],
+    reused: list[str],
+) -> frozenset[str] | None:
+    """The prop-row keys the CURRENT code produces, or None if undeterminable.
+
+    Preferred source is a week that was just rebuilt, because that costs
+    nothing extra. Only if every rebuilt week is prop-less -- which is the real
+    situation early in a season, when the rebuild window holds no games yet --
+    does it make a single live call for the current week.
+
+    Returns None rather than an empty set when it genuinely cannot tell. An
+    empty set would compare equal against every prop-less week and report
+    "nothing to do", which is the bug being fixed.
+    """
+    for key, week in weeks.items():
+        if key in reused:
+            continue
+        props = week.get("player_props") or []
+        if props:
+            return frozenset(props[0].keys())
+
+    try:
+        sample = routes._get_player_props_live(season, current_week)
+    except Exception as exc:  # noqa: BLE001 - reported by the caller
+        print(f"  ! live prop probe failed: {exc}")
+        return None
+    return frozenset(sample[0].keys()) if sample else None
+
+
+def _prop_shape_mismatch(week: dict, signature: frozenset[str]) -> bool:
+    """True when a reused week's props predate the current row shape.
+
+    A prop-less week is not a mismatch: it has no rows to be stale, and
+    rebuilding it would be pure cost.
+    """
+    props = week.get("player_props") or []
+    if not props:
+        return False
+    return not signature.issubset(props[0].keys())
+
+
 def build_snapshot(previous: dict | None = None) -> dict:
     season, current_week = routes.current_season_and_week()
     previous = previous or {}
@@ -64,6 +108,7 @@ def build_snapshot(previous: dict | None = None) -> dict:
         f"rebuilding {rebuild_from}-{rebuild_to}, reusing the rest..."
     )
     weeks: dict[str, dict] = {}
+    reused: list[str] = []
     for week in range(1, MAX_WEEK + 1):
         key = str(week)
         if rebuild_from <= week <= rebuild_to or key not in previous_weeks:
@@ -71,6 +116,37 @@ def build_snapshot(previous: dict | None = None) -> dict:
             weeks[key] = _build_week(season, week)
         else:
             weeks[key] = previous_weeks[key]
+            reused.append(key)
+
+    # A reused week is a copy, so it can never pick up a field that the code has
+    # since started emitting. That is not a hypothetical: `is_starter` and
+    # `depth_slot` were added to the CFB prop rows, and every week that actually
+    # carries props sits OUTSIDE the rebuild window -- at current_week 5 the
+    # window is weeks 4-8, while weeks 1-3 and 9-13 are copies. So the new
+    # fields reached five weeks of fifteen and nowhere else. The symptom is a
+    # frontend looking for a field the API is supposed to serve and finding it
+    # missing on most of the season -- and the obvious "it's a serialization
+    # bug" conclusion is wrong. It is the copy, not the writer.
+    #
+    # So: work out the shape the CURRENT code produces, and rebuild any reused
+    # week whose props do not match it. Narrow on purpose -- only the weeks
+    # whose row shape actually changed are rebuilt, so adding a field costs one
+    # build rather than all fifteen. A week carrying fields the code no longer
+    # emits is left alone rather than caught in a rebuild loop.
+    #
+    # This is the same defect and the same fix as NFL_Predictor commit 0c4ea1e,
+    # ported because the two modules are copies of each other and only one of
+    # them had it.
+    signature = _prop_key_signature(season, current_week, weeks, reused)
+    if signature is None:
+        print("  ! could not determine the current prop shape; reused weeks were NOT reconciled")
+    else:
+        stale = [key for key in reused if _prop_shape_mismatch(weeks[key], signature)]
+        for key in stale:
+            print(f"  week {key}: prop shape changed, rebuilding")
+            weeks[key] = _build_week(season, int(key))
+        if stale:
+            print(f"  reconciled {len(stale)} reused week(s) onto the new prop shape")
 
     print("Building season standings projection (this predicts every remaining FBS game -- slow)...")
     try:
