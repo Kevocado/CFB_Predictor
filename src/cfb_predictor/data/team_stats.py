@@ -394,7 +394,19 @@ def add_total_yards(frame: pd.DataFrame) -> pd.DataFrame:
     components = [column for column in ("net_passing_yards", "rushing_yards") if column in out.columns]
     if len(components) == 2:
         fallback = out[components[0]] + out[components[1]]
-        out["total_yards"] = out["total_yards"].where(out["total_yards"].notna(), fallback)
+        # `> 0`, not `.notna()`. CFBD ships `totalYards: 0` for 48 team-games across
+        # 2004-2025 whose own components sum to hundreds -- Hawai'i 2007 is recorded
+        # at 0 total yards in a game it won 63-? with 577 by CFBD's own numbers. A
+        # team that played cannot have gained zero total yards, so a zero here is a
+        # missing value wearing a plausible number, which is the same shape as every
+        # other defect this reconciliation exists to catch.
+        #
+        # It was not cosmetic. Those rows were the entire basis of the "the maximum is
+        # not bounded -- max 550" claim in this module's docstring: the largest residual
+        # in 22 seasons was `total_yards = 0` against a player total of 550, i.e. a
+        # missing value rather than a disagreement between two records. With this fixed
+        # the real figures are p99 50 and max 337.
+        out["total_yards"] = out["total_yards"].where(out["total_yards"].fillna(0) > 0, fallback)
     return out
 
 
