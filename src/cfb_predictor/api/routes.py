@@ -155,6 +155,49 @@ def _load_models_cached() -> dict:
     return manifest.load_models()
 
 
+# A player on a team with no current-season box score yet -- week 1, or a
+# bye-to-opener gap -- has no usage history to roll. That case previously got a
+# placeholder dict keyed `passing_yards`, `rushing_yards`, `receiving_yards`,
+# `targets`, `carries`, `receptions`. But `predict_props` does
+# `feature_row.reindex(feature_cols)`, and `feature_cols` is
+# `passing_yards_roll, rushing_yards_roll, ...`. None of those keys matched, so
+# every one reindexed to NaN and `.fillna(0)` produced the all-zero origin -- a
+# point in feature space the model was never trained on. What came back was the
+# intercept, not a prediction: on the 2026-09-27 Azure build, 71% of 2112 rows
+# shared a single `anytime_td_prob` as a result.
+#
+# Two things are wrong and both are fixed below. The keys must be derived from
+# PLAYER_FEATURE_COLUMNS so they cannot drift again. And the values must be a
+# plausible in-season rate rather than zeros -- an all-zero row is the origin
+# whatever it happens to be keyed with.
+#
+# `_ROSTER_FALLBACK_RATES` is a deliberately unremarkable CFB per-game rate. It
+# is a placeholder for a player we know nothing about, not a claim about that
+# player, and the two leagues' sibling route skips these players entirely
+# instead. Prefer skipping if the branch ever grows a way to do so honestly.
+_ROSTER_FALLBACK_RATES: dict[str, float] = {
+    "passing_yards_roll": 180.0,
+    "rushing_yards_roll": 40.0,
+    "receiving_yards_roll": 30.0,
+    "targets_roll": 4.0,
+    "carries_roll": 8.0,
+    "receptions_roll": 3.0,
+}
+
+
+def _roster_fallback_feature_row() -> pd.Series:
+    """Feature row for a roster player with no usage history.
+
+    Keyed off `PLAYER_FEATURE_COLUMNS` so the key set cannot drift from what
+    `predict_props` reads. Any column without an explicit placeholder rate gets a
+    neutral non-zero default, because a zero row is the origin the comment above
+    is about.
+    """
+    return pd.Series(
+        {column: _ROSTER_FALLBACK_RATES.get(column, 1.0) for column in player_usage.PLAYER_FEATURE_COLUMNS}
+    )
+
+
 def _load_models_or_503() -> dict:
     """manifest.load_models() raises FileNotFoundError when no manifest has
     ever been trained -- turn that into a friendly 503 instead of letting it
@@ -509,7 +552,7 @@ def _get_player_props_live(season: int, week: int):
         for _, player in latest_players.iterrows():
             try:
                 if "roster_" in str(player["player_id"]) or (player["player_id"].isdigit() and not (player_history["player_id"] == player["player_id"]).any()):
-                    feature_row = pd.Series({"attempts": 5.0, "completions": 3.0, "passing_yards": 40.0, "carries": 2.0, "rushing_yards": 10.0, "receptions": 2.0, "receiving_yards": 20.0, "targets": 3.0})
+                    feature_row = _roster_fallback_feature_row()
                 else:
                     feature_row = player_usage.build_features_for_player(player["player_id"], player_history)
                 
