@@ -501,6 +501,44 @@ def test_track_record_does_not_count_fabricated_ats_hits_from_the_old_build(cfb_
     )
 
 
+def test_a_half_present_market_is_not_counted_in_the_aggregate():
+    """One probability present and one missing is not a call either.
+
+    The existing fabricated-row test nulls BOTH probabilities, so a `_pair_present`
+    narrowed to a single column still excludes that row and the test still passes.
+    Verified: applying that narrowing to `store.py` leaves all 26 tests in this file
+    green. This case is what kills it -- `home_cover_prob` is set, so a filter
+    checking only that column lets the row through.
+
+    `_present`'s own docstring names the case: "0.6 against None is not obviously
+    the home side, but it is not a call either, and the same expression reports it
+    as one."
+    """
+    import pandas as pd
+
+    from cfb_predictor.tracking import store
+
+    # A real graded game, and a HIT: home_cover 0.55 > 0.45, home won by 10 > 3.5.
+    store.record_game_predictions([_future_game()])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+
+    # A second game the old build graded against a half-present market.
+    store.record_game_predictions([_future_game(
+        game_id="g2", home_cover_prob=0.6, away_cover_prob=None,
+    )])
+    with contextlib.closing(store._connect()) as conn, conn:
+        conn.execute(
+            "UPDATE game_predictions SET resolved = 1, ats_hit = 0, moneyline_hit = 1, "
+            "actual_home_score = 20, actual_away_score = 24 WHERE game_id = 'g2'"
+        )
+
+    summary = store._summarize_games(pd.read_sql("SELECT * FROM game_predictions", store._connect()))
+
+    # Only the genuine HIT counts. Including the fabricated MISS gives 0.5, so the
+    # two cannot be confused.
+    assert summary["pct_ats_correct"] == 1.0
+
+
 def test_a_genuinely_graded_market_is_still_counted_in_the_aggregate():
     """The guard must not swallow real ATS and totals rows."""
     import pandas as pd
