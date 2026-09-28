@@ -87,10 +87,19 @@ def main() -> int:
             f"appends the cached frame once per occurrence, so every row comes back doubled."
         )
 
-    _load_api_key()
-    if not os.environ.get("CFBD_API_KEY", "").strip():
-        print("CFBD_API_KEY is not set and was not found in .env -- cannot fetch.", file=sys.stderr)
-        return 2
+    # A dry run needs no key. It reads the cache directory and prints a plan; it cannot
+    # spend anything whatever the environment looks like, and demanding a secret to
+    # find that out is a barrier with no upside. Only `--execute` requires one, and it
+    # checks immediately before it would spend.
+    if args.execute:
+        _load_api_key()
+        if not os.environ.get("CFBD_API_KEY", "").strip():
+            print(
+                "CFBD_API_KEY is not set and was not found in .env -- cannot fetch. "
+                "(A dry run needs no key; pass --execute to spend quota.)",
+                file=sys.stderr,
+            )
+            return 2
 
     from cfb_predictor.data import team_stats
 
