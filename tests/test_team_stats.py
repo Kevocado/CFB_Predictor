@@ -13,7 +13,10 @@ looking fake feature.
 
 from __future__ import annotations
 
+import inspect
 import os
+import re
+import sys
 
 import pandas as pd
 import pytest
@@ -299,17 +302,36 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
     unflattened CFBD response, the team and player box scores simply disagree: for
     Campbell vs Monmouth (2023 week 3) the team box reports 182 rushing / 184 net
     passing and the player box reports 133 rushing / 172 receiving. Not a
-    flattening fault, not a dropped row, and not one-directional.
+    flattening fault, and not a dropped row.
 
-    At 22-season scale (42,172 comparable team-games) the distribution is
-    60.0% exact, 92.3% within 10, 98.3% within 35, median 0.00, p99 54.0 and
-    **max 550** — so the old 35-yard bound held for 2023 week 1 and for nothing
-    else. It is therefore removed below rather than loosened: a bound the source
-    does not honour is not a weaker assertion, it is a false one that would pass
-    on a lucky week and mislead on an unlucky one.
+    The residual is not one-directional *within that week* either -- it happened
+    to come out even there. Across 22 seasons it is not: **91.9%** of the 16,863
+    non-zero residuals run the same way, the player sum exceeding the team total.
+    So "not one-directional" was a week-1 reading presented as a property of the
+    source. (The earlier "sole outlier Robert Morris at -14" framing is likewise
+    retracted: it came off the broken week-keyed join, on a row count taken before
+    unplaceable games were dropped.)
 
-    The
-    opposite-signed outlier is Robert Morris, an FCS game.
+    At 22-season scale the distribution is 60.0% exact, 92.4% within 10, 98.4%
+    within 35, median 0.00, mean 3.39, p90/p99 7.00/50.00 and **max 337** (2004)
+    -- so the old 35-yard bound held for 2023 week 1 and for nothing else. It is
+    therefore removed below rather than loosened: a bound the source does not
+    honour is not a weaker assertion, it is a false one that would pass on a lucky
+    week and mislead on an unlucky one.
+
+    **Which population those figures describe.** 42,172 team-games with a
+    comparable player sum, from the backfill frame **before**
+    `attach_schedule_weeks` -- the population `reconcile_against_players` is
+    actually given when the join key is `game_id`, because the week is never
+    consulted. The *attach* path is a different and smaller population with its
+    own figures, recorded in `data/team_stats.py`'s module docstring. Quoting
+    either without saying which is how a one-week tolerance came to look
+    universal.
+
+    **This test runs the attach path**, and only 2023 week 1, so what it measures
+    is the 272-team-game row above -- not this table. The two are not
+    interchangeable, and the table is here to show the assertion below is not the
+    bound anyone thought it was.
 
     So the assertion is a real tolerance rather than a hard identity, and the
     deterministic guard against this specific bug regressing is the offline
@@ -380,6 +402,11 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
     # The 22-season figures cannot run in CI -- they need the 351-call CFBD backfill --
     # so they live in the module docstring, and the honesty about what is and is not
     # pinned is deliberate.
+    #
+    # `test_the_22_season_figures_and_their_population_are_quoted_consistently` is
+    # what stops this docstring drifting back out of agreement with that one again.
+    # It did once, and the two were 0.1pp apart on within-10 and 213 yards apart on
+    # the max, with the stale copy the one a reader lands on first.
 
 def test_reconcile_keys_on_the_game_not_the_week():
     """A team can play twice in one week, and CFBD's `week` argument over-returns,
@@ -763,3 +790,235 @@ def test_a_genuine_non_zero_total_is_still_preferred_over_the_sum():
     out = team_stats.add_total_yards(frame)
 
     assert out["total_yards"].iloc[0] == 550.0, "CFBD's own total must win when it is present"
+
+
+# ------------------------------------------------------- the quoted measurements
+
+
+def _docstring_of(container):
+    return inspect.getdoc(container) or ""
+
+
+# The two docstrings state the same measurement in different shapes: a markdown
+# table in the module, a sentence in the test. Each extractor is anchored to the
+# column / sentence that names the *pre-attach* population, rather than scanning
+# the whole docstring for a number that looks right.
+#
+# Anchoring matters, and the first attempt here proved it. A whole-docstring regex
+# for "exact" matched the module's *attach-path* sentence ("59.2% exact") and
+# reported a disagreement that did not exist -- the two populations have different
+# exactness (60.0% vs 59.2%) and both are correct. Any extractor loose enough to
+# find a figure anywhere in the text will find the wrong population's figure here,
+# so the population has to be part of the match.
+
+_TABLE_ROW_LABELS = {
+    "exact (`diff == 0`)": ("exact",),
+    "within 10 yards": ("within_10",),
+    "within 35 yards": ("within_35",),
+    "mean abs diff": ("mean",),
+    "p90 / p99 abs diff": ("p90", "p99"),
+    "max abs diff": ("max",),
+}
+
+
+def _pre_attach_table_figures(module_doc):
+    """The `22 seasons, pre-attach` column of the module docstring's table.
+
+    Returns {} if the column is renamed or the table is removed, which the caller
+    treats as a failure -- an unparseable table must not read as agreement.
+    """
+    rows = {}
+    header = None
+    for line in module_doc.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if header is None:
+            if any("22 seasons" in cell for cell in cells):
+                header = next(i for i, cell in enumerate(cells) if "22 seasons" in cell)
+            continue
+        if len(cells) <= header or not cells[0] in _TABLE_ROW_LABELS:
+            continue
+        numbers = re.findall(r"\d+(?:\.\d+)?", cells[header])
+        if numbers:
+            rows[_TABLE_ROW_LABELS[cells[0]]] = tuple(float(n) for n in numbers)
+    # `zip`, not `value[0]` for every label: the p90/p99 row carries two numbers in
+    # one cell, so the labels line up positionally with the numbers. Taking the
+    # first number for both reported p99 as 7.0.
+    return {
+        label: number
+        for labels, numbers in rows.items()
+        for label, number in zip(labels, numbers)
+    }
+
+
+def _pre_attach_prose_figures(network_doc):
+    """The `At 22-season scale ...` sentence of the network test's docstring.
+
+    Anchored to that sentence, because the same docstring also quotes the 2023
+    week-1 row (95.6% within 10, max 29) and those are a different population
+    again -- one week, on the attach path.
+    """
+    match = re.search(
+        r"At 22-season scale(?P<body>.+?)(?=\n\s*\n|\Z)", network_doc, re.DOTALL
+    )
+    if not match:
+        return {}
+    body = match.group("body")
+    figures = {}
+    # `\s+` rather than a literal space: the sentence is hard-wrapped in the source,
+    # and a figure routinely lands at the end of one line with its label at the
+    # start of the next ("98.4%\n    within 35"). Matching a single space would
+    # silently drop that figure, and the key-set check above would then report a
+    # missing label rather than the wrapping it actually is.
+    for label, pattern in (
+        ("exact", r"(\d+\.\d)%\s+exact"),
+        ("within_10", r"(\d+\.\d)%\s+within\s+10\b"),
+        ("within_35", r"(\d+\.\d)%\s+within\s+35\b"),
+        ("mean", r"mean\s+(\d+\.\d+)"),
+        ("p90", r"p90/p99\s+(\d+\.\d+)"),
+        ("p99", r"p90/p99\s+\d+\.\d+/(\d+\.\d+)"),
+        ("max", r"max\s+(\d+(?:\.\d+)?)"),
+    ):
+        found = re.search(pattern, body, re.IGNORECASE)
+        if found:
+            figures[label] = float(found.group(1))
+    return figures
+
+
+def test_the_22_season_figures_and_their_population_are_quoted_consistently():
+    """The module docstring and the network test's docstring must quote ONE measurement.
+
+    **What was actually wrong.** `data/team_stats.py` was corrected -- `add_total_yards`
+    had been accepting CFBD's `totalYards: 0` as real, and the largest residual in 22
+    seasons was a team-game at `total_yards = 0` against a player sum of 550, so the
+    "max 550 / p99 54 / 92.3% within 10" table was measuring a missing value. The
+    corrected figures are 92.4% / 98.4% / p99 50 / max 337.
+
+    The module docstring got that correction. **This file's network docstring did
+    not.** It still said "92.3% within 10, 98.3% within 35, median 0.00, p99 54.0
+    and max 550" while a comment 60 lines below it, in the same file, said "At 22
+    seasons the max is 337 (2004) and 92.4% are within 10". Two different
+    measurements for one population, in one file, with neither saying which
+    population it described. A reader landing on the docstring took away figures
+    that the code does not produce.
+
+    So this asserts two things, and the second is the one that was actually missing:
+
+    1. the two docstrings quote the same numbers, and
+    2. each of them says **which** population it is describing -- the frame before
+       `attach_schedule_weeks`, or the frame after it.
+
+    **Why 1 alone would have been a weak test.** The retracted and the corrected
+    figures are both internally consistent, and a docstring that mentions no figures
+    at all would satisfy "both quote the same numbers" vacuously by extracting
+    nothing from both sides. Hence the non-empty check, and hence 2.
+
+    **Mutation-verified.** See the surviving-mutant note in
+    `_reconciliation_figures` and the assertions below; the population half fails
+    when the label is removed from either docstring, and the figures half fails when
+    either side is moved back to the retracted numbers.
+    """
+    module_doc = _docstring_of(team_stats)
+    network_doc = _docstring_of(
+        sys.modules[__name__].test_cfbd_team_stats_reconciles_against_real_player_data
+    )
+
+    module_figures = _pre_attach_table_figures(module_doc)
+    network_figures = _pre_attach_prose_figures(network_doc)
+
+    assert module_figures, f"parsed no figures out of the team_stats docstring table: {module_figures}"
+    assert network_figures, f"parsed no figures out of the network test docstring: {network_figures}"
+
+    # The module docstring's table is the fuller statement; every figure it carries
+    # must be carried identically by the test docstring. Compare on the keys the
+    # module has, so a figure dropped from one side shows up as a mismatch rather
+    # than as silence. Keys present only on the test side are a defect too -- a
+    # figure quoted nowhere else is a figure with no second source to check
+    # against -- so the key sets are required to be equal rather than merely
+    # overlapping.
+    for label, value in module_figures.items():
+        assert label in network_figures, (
+            f"the network test docstring no longer quotes {label!r}; it and "
+            f"data/team_stats.py must describe the same measurement"
+        )
+        assert network_figures[label] == value, (
+            f"{label}: data/team_stats.py says {value} and tests/test_team_stats.py says "
+            f"{network_figures[label]}. One of them is stale. If this measurement was "
+            f"re-measured, both docstrings must move together -- and neither may be "
+            f"re-measured on one week, which is how the 35-yard bound got here."
+        )
+
+    # The population, which is the half the handover recorded as missing.
+    for name, text in (("data/team_stats.py", module_doc), ("tests/test_team_stats.py", network_doc)):
+        assert "attach_schedule_weeks" in text, (
+            f"{name} quotes the 22-season figures without saying they are measured "
+            f"before or after attach_schedule_weeks, so a reader cannot tell which "
+            f"population they describe"
+        )
+
+    # And the two populations must be named as *different*, not as one figure set
+    # with two labels. This is the specific confusion: the attach path drops 13.4% of
+    # the frame, so its numbers are not a refinement of the pre-attach ones.
+    assert "36,515" in module_doc, (
+        "the attach-path population (36,515 team-games) is no longer quoted alongside the "
+        "pre-attach one; the two are different populations and dropping one is how the "
+        "figures got conflated in the first place"
+    )
+
+
+def test_a_quoted_22_season_figure_must_say_which_population_it_describes():
+    """The parser is only honest if it cannot pass on an unlabelled docstring.
+
+    Feeds `_reconciliation_figures` a docstring in each of the two real formats, and
+    one that quotes a figure with no population at all, and asserts the first two
+    parse and the third parses *only* because the numbers are there -- which is
+    exactly why the population assertion is a separate check on the text rather
+    than something the parser can establish.
+
+    Without this, a future edit that reformatted the population sentence out of the
+    table's header would leave the figures test green and the population test
+    vacuous.
+    """
+    table_style = """
+    **Which population this is.** Pre-attach.
+    | | 22 seasons, pre-attach | 2023 week 1 alone |
+    | exact (`diff == 0`) | 60.0% | 59.2% |
+    | within 10 yards | 92.4% | 95.6% |
+    | max abs diff | 337.0 (2004) | 29.0 |
+    """
+    prose_style = (
+        "**Which population.** Pre-attach, the frame before `attach_schedule_weeks`.\n"
+        "\n"
+        "At 22-season scale the distribution is 60.0% exact, 92.4% within 10, "
+        "98.4% within 35, median 0.00, mean 3.39, p90/p99 7.00/50.00 and max 337 (2004).\n"
+    )
+    unlabelled = (
+        "At 22-season scale the distribution is 60.0% exact, 92.4% within 10, "
+        "98.4% within 35, median 0.00, mean 3.39, p90/p99 7.00/50.00 and max 337 (2004).\n"
+    )
+
+    table_figures = _pre_attach_table_figures(table_style)
+    assert table_figures["within_10"] == 92.4, f"failed to parse the table: {table_figures}"
+    assert table_figures["max"] == 337.0, f"failed to parse the table: {table_figures}"
+    # The wrong column must not be readable: 59.2 and 29.0 are the 2023 week-1
+    # figures in the same table, and an extractor that grabbed them would compare
+    # one week against 22 seasons.
+    assert table_figures["exact"] == 60.0, f"grabbed the wrong column: {table_figures}"
+
+    for text in (prose_style, unlabelled):
+        figures = _pre_attach_prose_figures(text)
+        assert figures["within_10"] == 92.4, f"failed to parse prose: {figures}"
+        assert figures["max"] == 337.0, f"failed to parse prose: {figures}"
+
+    # The extractors are label-blind by construction: a docstring whose 22-season
+    # sentence carries no population qualifier parses identically to one that does,
+    # because a percentage says nothing about which population was measured. That
+    # is why the population check in the test above is a separate check on the raw
+    # text. These assertions exist to keep that split honest -- if someone folded
+    # the population into the figure regex, the two checks would become
+    # indistinguishable and the figure check would go quietly blind.
+    assert _pre_attach_prose_figures(unlabelled) == _pre_attach_prose_figures(prose_style)
+    assert "attach_schedule_weeks" not in unlabelled
+    assert "attach_schedule_weeks" in prose_style
+
+    # A renamed or removed column must read as unparseable, not as agreement.
+    assert _pre_attach_table_figures(table_style.replace("22 seasons, pre-attach", "all")) == {}
