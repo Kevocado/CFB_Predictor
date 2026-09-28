@@ -17,6 +17,27 @@ Three separate claims are under test and they need separate instruments:
 Nothing here opens a network connection or a database outside `tmp_path`; the autouse
 fixture below also repoints the app's own `TRACKING_DB_PATH` at the temp file so that a
 test which forgot to pass `--db` still could not reach `data/tracking.db`.
+
+Mutation log
+------------
+36 mutants induced against `scripts/null_fabricated_market_hits.py`, one at a time, each
+run against this file alone. 35 caught. One survivor, and it is equivalent rather than a
+gap:
+
+  * `?mode=ro` dropped from the read-only URI, the `is_file()` guard left in place.
+    Unobservable. SQLite's unix VFS retries a failed `O_RDWR` with `O_RDONLY` and
+    silently downgrades -- verified on this platform -- so the remaining guard alone still
+    prevents creating a missing database, and reading an existing one succeeds either
+    way. The suite pins the *behaviour*: the complementary single mutant (`is_file()`
+    removed, `mode=ro` kept) is caught, and so is the combined mutant with both gone.
+    `mode=ro` is still the right thing to ask for, because it states the intent instead
+    of relying on a fallback inside a C library.
+
+Earlier passes found gaps that are now covered, and they are worth recording because they
+are the shapes this kind of code actually gets wrong: a row whose ATS grade was fabricated
+while its totals grade is real (the only shape that distinguishes the two markets'
+guards), a failed repair that left a transaction open, and a backup taken with a writer
+held open so the rows are still in the `-wal`.
 """
 
 from __future__ import annotations
