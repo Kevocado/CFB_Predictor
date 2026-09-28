@@ -57,7 +57,10 @@ non-zero and read as a pass. The replacement is Python and does not have that sh
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,6 +80,22 @@ DOCKERFILE = REPO / "Dockerfile"
 # The container image. `data/cache/` is gitignored and also in .dockerignore, so the
 # only way a fresh container can have a team-stats cache is if it goes and gets one.
 KEY = "Bearer test-key-not-real"
+
+# **Every call in this file is handed its environment explicitly.** The first version
+# of this file let `plan_seed`/`run_startup_seed` fall back to `os.environ`, which
+# meant the whole suite passed on a developer machine with the repository's `.env`
+# sourced and failed in CI, where no `CFBD_API_KEY` exists -- nine tests, all
+# reading the same ambient key, all reporting `outcome=blocked`. `ENV` and
+# `NO_KEY` exist so the key under test is a constant rather than a fact about the
+# machine, and
+# `test_this_file_does_not_depend_on_the_ambient_environment` re-runs the file in a
+# subprocess with the key stripped so the mistake cannot come back quietly.
+ENV = {"CFBD_API_KEY": KEY}
+NO_KEY: dict[str, str] = {}
+
+# Marks the keyless child spawned by the hermeticity check at the bottom of this
+# file, so the child skips the check rather than recursing into it.
+HERMETIC_CHILD = "CFB_STARTUP_SEED_HERMETIC_CHILD"
 
 
 @pytest.fixture
@@ -138,7 +157,7 @@ def _seed_config(**env):
 
 
 def test_an_empty_cache_decides_to_seed(cache):
-    plan = startup_seed.plan_seed(_seed_config(), cache)
+    plan = startup_seed.plan_seed(_seed_config(), cache, env=ENV)
 
     assert plan.state is CacheState.EMPTY
     assert plan.action is Action.SEED
@@ -156,7 +175,7 @@ def test_a_populated_cache_spends_nothing_on_a_second_boot(cache):
     config = _seed_config()
     first_executor = _recorder()
 
-    first = run_startup_seed(config, cache, executor=first_executor)
+    first = run_startup_seed(config, cache, executor=first_executor, env=ENV)
     assert first.outcome is Outcome.SEEDED
     assert len(first_executor.calls) == 1
 
@@ -165,6 +184,7 @@ def test_a_populated_cache_spends_nothing_on_a_second_boot(cache):
         config,
         cache,
         executor=lambda plan: second_calls.append(plan),
+        env=ENV,
     )
 
     assert second.outcome is Outcome.SKIPPED
@@ -176,7 +196,7 @@ def test_a_populated_cache_is_a_fast_no_op_that_never_reaches_the_fetcher(cache)
     _fill(config)
     calls = []
 
-    result = run_startup_seed(config, cache, executor=calls.append)
+    result = run_startup_seed(config, cache, executor=calls.append, env=ENV)
 
     assert result.outcome is Outcome.SKIPPED
     assert result.plan.state is CacheState.COMPLETE
@@ -194,7 +214,7 @@ def test_a_partly_populated_cache_does_not_bill_by_default(cache):
     _write(2020, 1)
     calls = []
 
-    result = run_startup_seed(config, cache, executor=calls.append)
+    result = run_startup_seed(config, cache, executor=calls.append, env=ENV)
 
     assert result.plan.state is CacheState.PARTIAL
     assert result.outcome is Outcome.SKIPPED
@@ -208,7 +228,7 @@ def test_an_explicit_resume_flag_is_what_it_takes_to_finish_a_partial_cache(cach
     _write(2020, 1)
     executor = _recorder()
 
-    result = run_startup_seed(config, cache, executor=executor)
+    result = run_startup_seed(config, cache, executor=executor, env=ENV)
 
     assert result.outcome is Outcome.SEEDED
     assert len(executor.calls) == 1
@@ -229,14 +249,14 @@ def test_an_unreadable_cache_file_is_reported_as_partial_not_as_empty(cache):
     _write(2021, 1)
     calls = []
 
-    mixed = run_startup_seed(config, cache, executor=calls.append, env={"CFBD_API_KEY": KEY})
+    mixed = run_startup_seed(config, cache, executor=calls.append, env=ENV)
     assert mixed.plan.state is CacheState.PARTIAL
     assert mixed.plan.unreadable_pairs == 1
     assert mixed.plan.cached_pairs == 1
     assert calls == []
 
     (team_stats.TEAM_STATS_CACHE_DIR / "2021_wk01.parquet").write_bytes(b"not parquet")
-    only_torn = startup_seed.plan_seed(config, cache, env={"CFBD_API_KEY": KEY})
+    only_torn = startup_seed.plan_seed(config, cache, env=ENV)
 
     assert only_torn.cached_pairs == 0
     assert only_torn.unreadable_pairs == 2
@@ -252,7 +272,7 @@ def test_a_missing_api_key_blocks_the_seed_instead_of_attempting_it(cache):
     config = _seed_config()
     calls = []
 
-    result = run_startup_seed(config, cache, executor=calls.append, env={})
+    result = run_startup_seed(config, cache, executor=calls.append, env=NO_KEY)
 
     assert result.outcome is Outcome.BLOCKED
     assert result.plan.state is CacheState.EMPTY, "the cache is still honestly reported empty"
@@ -279,7 +299,7 @@ def test_a_nonsense_scope_disables_seeding_rather_than_guessing_one(cache):
         assert config.error and named in config.error, (env, config.error)
 
         calls = []
-        result = run_startup_seed(config, cache, executor=calls.append)
+        result = run_startup_seed(config, cache, executor=calls.append, env=ENV)
         assert result.outcome is Outcome.BLOCKED, env
         assert calls == [], env
 
@@ -288,7 +308,7 @@ def test_seeding_can_be_turned_off_entirely(cache):
     config = _seed_config(CFB_SEED_TEAM_STATS="false")
     calls = []
 
-    result = run_startup_seed(config, cache, executor=calls.append)
+    result = run_startup_seed(config, cache, executor=calls.append, env=ENV)
 
     assert not config.enabled
     assert result.outcome is Outcome.SKIPPED
@@ -307,6 +327,7 @@ def test_scope_can_be_reduced_by_configuration(cache):
     plan = startup_seed.plan_seed(
         _config(CFB_SEED_FROM_YEAR="2023", CFB_SEED_TO_YEAR="2025", CFB_SEED_WEEKS="1-3"),
         cache,
+        env=ENV,
     )
 
     assert plan.config.seasons == [2023, 2024, 2025]
@@ -336,7 +357,7 @@ def test_the_default_scope_costs_what_the_plan_says_it_costs(cache):
     distribution, so one evaluation is the whole measurement.
     """
     config = _config()
-    plan = startup_seed.plan_seed(config, cache)
+    plan = startup_seed.plan_seed(config, cache, env=ENV)
 
     assert (config.seasons[0], config.seasons[-1]) == (2004, 2025)
     assert len(config.seasons) == 22
@@ -370,7 +391,7 @@ def test_a_failed_backfill_is_reported_and_never_retried(cache, error):
         calls.append(plan)
         raise error
 
-    result = run_startup_seed(_seed_config(), cache, executor=executor)
+    result = run_startup_seed(_seed_config(), cache, executor=executor, env=ENV)
 
     assert result.outcome is Outcome.FAILED
     assert len(calls) == 1, "the boot task retried, which is a second bill per boot"
@@ -389,11 +410,11 @@ def test_an_empty_cache_and_a_failed_one_are_distinguishable_in_the_log(cache, c
     def boom(plan):
         raise RuntimeError("cfbd is unreachable")
 
-    run_startup_seed(_seed_config(), cache, executor=boom, env={})
+    run_startup_seed(_seed_config(), cache, executor=boom, env=NO_KEY)
     blocked = caplog.text
     caplog.clear()
 
-    run_startup_seed(_seed_config(), cache, executor=boom)
+    run_startup_seed(_seed_config(), cache, executor=boom, env=ENV)
     failed = caplog.text
 
     assert "cache=empty" in blocked
@@ -408,7 +429,7 @@ def test_the_cache_state_is_always_named_in_the_log(cache, caplog):
     config = _seed_config()
     _fill(config)
 
-    run_startup_seed(config, cache, executor=lambda plan: pytest.fail("spent quota"))
+    run_startup_seed(config, cache, executor=lambda plan: pytest.fail("spent quota"), env=ENV)
 
     assert "cache=complete" in caplog.text
     assert "action=skip" in caplog.text
@@ -423,8 +444,7 @@ def test_check_mode_reports_the_cache_state_and_spends_nothing(cache, capsys):
     calls = []
 
     code = startup_seed.main(
-        ["--check"], config=config, cache_dir=cache, executor=calls.append,
-        env={"CFBD_API_KEY": KEY},
+        ["--check"], config=config, cache_dir=cache, executor=calls.append, env=ENV
     )
 
     out = capsys.readouterr().out
@@ -444,8 +464,7 @@ def test_the_entrypoint_exits_zero_even_when_seeding_fails(cache, capsys):
         raise RuntimeError("cfbd is unreachable")
 
     code = startup_seed.main(
-        [], config=_seed_config(), cache_dir=cache, executor=boom,
-        env={"CFBD_API_KEY": KEY},
+        [], config=_seed_config(), cache_dir=cache, executor=boom, env=ENV
     )
 
     assert code == 0
@@ -455,8 +474,7 @@ def test_the_entrypoint_exits_zero_even_when_seeding_fails(cache, capsys):
 def test_the_status_line_names_outcome_state_and_estimated_cost(cache, capsys):
     startup_seed.main(
         ["--check"], config=_seed_config(), cache_dir=cache,
-        executor=lambda plan: pytest.fail("spent quota"),
-        env={"CFBD_API_KEY": KEY},
+        executor=lambda plan: pytest.fail("spent quota"), env=ENV
     )
 
     out = capsys.readouterr().out
@@ -496,10 +514,10 @@ def test_the_real_executor_refuses_without_a_key_and_never_touches_the_fetcher(
         raise AssertionError("fetch_team_stats was reached: a metered CFBD call")
 
     monkeypatch.setattr(team_stats, "fetch_team_stats", tripwire)
-    plan = startup_seed.plan_seed(_seed_config(), cache, env={})
+    plan = startup_seed.plan_seed(_seed_config(), cache, env=NO_KEY)
 
     with pytest.raises(RuntimeError, match="CFBD_API_KEY"):
-        startup_seed.execute_backfill(plan, env={})
+        startup_seed.execute_backfill(plan, env=NO_KEY)
 
 
 def test_the_local_footgun_is_documented_because_it_is_real():
@@ -518,6 +536,66 @@ def test_the_local_footgun_is_documented_because_it_is_real():
             f"startup_seed.py's docstring no longer mentions {token!r}; the warning that "
             "a bare local run can spend real quota is the only guard it has"
         )
+
+
+def test_this_file_does_not_depend_on_the_ambient_environment():
+    """Re-run this file in a subprocess with the key stripped from the environment.
+
+    Nine tests in the first version of this file read `os.environ` for
+    `CFBD_API_KEY` by letting `plan_seed`/`run_startup_seed` default to it. They
+    passed on a developer machine with the repository's `.env` sourced and failed
+    in CI, where no such variable exists -- every one of them reporting
+    `outcome=blocked`, which is a correct answer to the wrong question.
+
+    Nothing else catches that class of bug: the assertions are right, the
+    fixtures are right, and the file is green on exactly the machine that has the
+    secret. So the file checks itself, in a child process with the secret removed,
+    the same way tests/test_backfill_script.py scrubs the key out of its own
+    subprocesses. A test suite that can only be run by someone holding a
+    credential is not a test suite.
+
+    The child is marked with `HERMETIC_CHILD` so that *it* skips this test rather
+    than spawning a grandchild. Without that the first version of this test
+    recursed until the 300s timeout, which is its own kind of self-inflicted
+    outage.
+    """
+    if os.environ.get(HERMETIC_CHILD):
+        pytest.skip("this is the keyless child process; its parent does the asserting")
+
+    child_env = dict(os.environ)
+    child_env.pop("CFBD_API_KEY", None)
+    # **Empty, not merely absent.** `config.py`'s `load_dotenv()` walks up and finds
+    # the repository's `.env`, and python-dotenv only skips a variable that is
+    # *already set* -- so popping the key is not enough on a developer machine, where
+    # the child would quietly get the real key back and the check would pass while
+    # proving nothing. An empty value is already-set, so dotenv leaves it alone.
+    child_env["CFBD_API_KEY"] = ""
+    child_env[HERMETIC_CHILD] = "1"
+    child_env["PYTHONPATH"] = "src"
+
+    # Prove the child really is keyless before trusting its result. A guard that can
+    # pass because it did not run is the same failure as a guard that passes vacuously.
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from cfb_predictor.config import CFBD_API_KEY; "
+         "sys.exit(0 if not CFBD_API_KEY else 1)"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=120, env=child_env,
+    )
+    assert probe.returncode == 0, (
+        "the child process still resolves a CFBD_API_KEY from disk, so the keyless run "
+        "below would not be keyless and the check is vacuous"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", __file__, "-q", "-m", "not network",
+         "-p", "no:cacheprovider"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=300, env=child_env,
+    )
+
+    assert result.returncode == 0, (
+        "tests/test_startup_seed.py fails without CFBD_API_KEY in the environment, so it "
+        f"is reading the ambient one:\n{result.stdout[-3000:]}"
+    )
 
 
 def test_the_module_says_where_the_backfill_actually_lives():
