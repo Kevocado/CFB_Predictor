@@ -606,6 +606,27 @@ def test_a_failed_run_puts_the_error_on_the_printed_line(cache, capsys):
     )
 
 
+def test_a_timed_out_upstream_is_reported_as_failed_with_its_cause(cache, capsys):
+    """The operator-visible outcome of the 2026-09-28 hang, once bounded.
+
+    A hung (season, week) now raises instead of stalling the boot task forever,
+    and the failure must arrive on the printed line as `outcome=failed` with the
+    timeout named in `error=` -- not as a bare hang, and not as a silent stall.
+    The executor is a stand-in for the fetch path; the timeout itself is pinned
+    in tests/test_team_stats.py.
+    """
+    def hang_then_raise(plan):
+        raise TimeoutError("timed out after 60 seconds")
+
+    startup_seed.main([], config=_seed_config(), cache_dir=cache, executor=hang_then_raise, env=ENV)
+
+    out = capsys.readouterr().out
+    assert "outcome=failed" in out, out
+    assert "error=TimeoutError: timed out after 60 seconds" in out, (
+        f"a timed-out upstream stopped the seed without saying why:\n{out}"
+    )
+
+
 def test_the_failure_reason_explains_the_failure_and_not_the_plan(cache, capsys):
     """`reason=` and `plan_reason=` are two different questions, and stay so.
 

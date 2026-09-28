@@ -634,12 +634,16 @@ def fake_cfbd(monkeypatch):
     import sys
     import types
 
-    state = {"payload_by_week": {}, "calls": []}
+    state = {"payload_by_week": {}, "calls": [], "timeouts": []}
 
     class _GamesApi:
-        def get_game_team_stats(self, year, week):
+        def get_game_team_stats(self, year, week, _request_timeout=None, **kwargs):
             state["calls"].append((year, week))
-            return state["payload_by_week"].get(week, [])
+            state["timeouts"].append(_request_timeout)
+            payload = state["payload_by_week"].get(week, [])
+            if isinstance(payload, BaseException):
+                raise payload
+            return payload
 
     class _ApiClient:
         def __init__(self, *a, **k):
@@ -687,6 +691,90 @@ def test_a_recorded_empty_week_still_yields_a_frame_the_caller_can_concat(monkey
         f"got {list(out.columns)}"
     )
     assert out.empty
+
+
+# --- timeout: a hung upstream must fail fast, loudly, and resumably ------------
+#
+# Observed in production on 2026-09-28: the startup seeder hung with zero
+# established TCP connections and wrote nothing for 6+ minutes. The generated
+# `cfbd` client issues each request with `_request_timeout=None`, which becomes
+# urllib3 `timeout=None` -- wait forever. One hung (season, week) therefore
+# stalls the whole boot task, silently: no file, no error, no progress.
+#
+# Nothing here reaches the network. `fake_cfbd` stubs the `cfbd` module in
+# `sys.modules`, and a per-week payload may be an exception instance, in which
+# case the stub raises it -- the hermetic shape of a timed-out upstream.
+
+
+def test_every_metered_call_carries_a_bounded_timeout(monkeypatch, tmp_path, fake_cfbd):
+    """Each (season, week) request must bound how long it can stall.
+
+    The timeout lives on the request, not in the library's defaults (there are
+    none -- `_request_timeout=None` means wait forever), so the assertion reads
+    what the fake client was actually handed, per call.
+    """
+    from cfb_predictor.data import team_stats
+
+    monkeypatch.setattr(team_stats, "TEAM_STATS_CACHE_DIR", tmp_path)
+    fake_cfbd["payload_by_week"] = {1: [], 2: []}
+
+    team_stats.fetch_team_stats([2023], weeks=[1, 2])
+
+    assert fake_cfbd["calls"] == [(2023, 1), (2023, 2)]
+    bound = team_stats.CFBD_REQUEST_TIMEOUT
+    assert isinstance(bound, (int, float)) and not isinstance(bound, bool), (
+        f"CFBD_REQUEST_TIMEOUT must be a number of seconds, got {bound!r}"
+    )
+    assert 0 < bound <= 300, (
+        f"CFBD_REQUEST_TIMEOUT={bound!r}: a non-positive bound waits forever, "
+        "and anything above 300 lets one hung week stall a boot task past any "
+        "reasonable patience. Normal responses are seconds; 60 is generous."
+    )
+    assert fake_cfbd["timeouts"] == [bound, bound], (
+        f"a metered call went out without the bound: {fake_cfbd['timeouts']!r}"
+    )
+
+
+def test_a_timed_out_week_raises_and_is_neither_success_nor_cached(monkeypatch, tmp_path, fake_cfbd):
+    """A timeout must propagate, keep what was already paid for, and stay resumable.
+
+    Three properties in one test because they are one production story: the
+    2026-09-28 run stopped partway, and the resume has to (a) not mistake the
+    interruption for success, (b) not re-bill the weeks already on disk, and
+    (c) re-request exactly the week that never completed.
+    """
+    from cfb_predictor.data import team_stats
+
+    class _Game:
+        """The generated client returns model objects; the fetch calls `.to_dict()`."""
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self):
+            return self._payload
+
+    monkeypatch.setattr(team_stats, "TEAM_STATS_CACHE_DIR", tmp_path)
+    fake_cfbd["payload_by_week"] = {1: [_Game(_raw_game())], 2: TimeoutError("timed out")}
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        team_stats.fetch_team_stats([2023], weeks=[1, 2])
+
+    # Week 1 was paid for and must be on disk in the shape the staleness gate
+    # accepts; week 2 wrote nothing, so it is neither success nor cached.
+    assert team_stats._read_cache(team_stats._week_cache_path(2023, 1)) is not None
+    assert not team_stats._week_cache_path(2023, 2).exists()
+
+    # The resume bills exactly the missing week -- one attempt, no retry
+    # multiplier -- and then completes.
+    fake_cfbd["payload_by_week"] = {2: [_Game(_raw_game(game_id="401520282"))]}
+    fake_cfbd["calls"].clear()
+    out = team_stats.fetch_team_stats([2023], weeks=[1, 2])
+    assert fake_cfbd["calls"] == [(2023, 2)], (
+        f"the resume re-billed cached weeks or retried: {fake_cfbd['calls']}"
+    )
+    assert len(out) == 4, f"expected both weeks' team-games, got {len(out)} rows"
+
 
 
 def test_reconcile_accepts_cfbds_own_player_team_column_name():
