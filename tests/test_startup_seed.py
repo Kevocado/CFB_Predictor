@@ -22,7 +22,8 @@ key, which is the whole safety property, and it is checked with a tripwire that 
 Mutation-verified by `tests/mutants/startup_seed_mutants.py`, which applies each
 mutation as an exact string replacement, refuses to report a mutation whose anchor did
 not apply (a silent no-op is not a survivor), and restores the tree afterwards:
-17 induced, **17 caught, 0 survived, 0 vacuous**. The ones that matter most:
+**28 induced, 28 caught, 0 survived, 0 vacuous** (17 + 11 added for the defects
+below). The ones that matter most:
 
 | mutation | caught by |
 |---|---|
@@ -43,6 +44,15 @@ not apply (a silent no-op is not a survivor), and restores the tree afterwards:
 | drop the seeder from `CMD` | the Dockerfile test |
 | chain the seeder with `&&` | the Dockerfile test |
 | drop `exec` before uvicorn | the Dockerfile test |
+| drop `error=` from the status line | `..._puts_the_error_on_the_printed_line` |
+| `reason=` back to the plan's rationale | `..._explains_the_failure_and_not_the_plan` |
+| describe a failure as a success | `..._explains_the_failure_and_not_the_plan` |
+| skip the post-attempt re-count | `..._reports_what_it_actually_wrote` |
+| name a path absent from the image | `..._names_nothing_absent_from_the_image` |
+| drop the `.env` trap from the advice | `..._names_the_compose_exec_form_and_the_env_trap` |
+| a blank variable falls back to its default | `..._set_but_blank_is_refused` |
+| silently ignore vars set while seeding is off | `..._set_while_seeding_is_off_is_reported` |
+| `--check` flattens `blocked` to `skipped` | `..._blank_master_switch_reads_as_blocked` |
 
 **One survivor, found and closed.** The first pass had a mutation that ignored
 unreadable files, and it survived: the test only covered a cache with *one* torn file
@@ -52,6 +62,19 @@ reads as EMPTY the boot re-bills for files already on disk, forever. The test no
 covers both. The first harness also reported two false SURVIVEs: its `if pytest |
 grep` pipelines ran under `set -o pipefail`, so a failing test made the whole pipeline
 non-zero and read as a pass. The replacement is Python and does not have that shape.
+
+**Zero survivors in the 2026-09-28 round, and one correction worth recording.** The
+brief for that work predicted an inverted boolean or a mis-ordered conditional
+behind the production line reading `action=seed outcome=failed`. There is neither:
+`run_startup_seed` sets `Outcome.SEEDED` on the success path and reaches
+`Outcome.FAILED` only inside `except Exception`, and
+`test_a_successful_seed_says_seeded_and_never_says_failed` passes against
+origin/main's source **unmodified** — verified by swapping the old module back in and
+re-running this file, where 9 of the 10 tests added that round go red. The `failed`
+was true; the line was untruthful about everything *around* it. The mutant
+`a successful seed reports outcome=failed` is therefore kept as a guard, and as the
+control that lets the other four new mutants be read as reproductions of real
+defects rather than of a bug that was never there.
 """
 
 from __future__ import annotations
