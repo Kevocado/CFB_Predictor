@@ -18,8 +18,27 @@ COPY models/ /app/models/
 # this image. Must exist before building.
 COPY data/public_snapshot.json ./data/public_snapshot.json
 
+# `data/cache/` is gitignored *and* .dockerignore'd, so every one of the
+# mkdir'd cache directories above is empty in this image and stays empty on
+# every cold start. The team-stats backfill that produced the 42,190-row
+# reconciliation in data/team_stats.py filled a local checkout's copy; none of
+# it is here. startup_seed.py makes a fresh container fill that gap itself,
+# exactly once, and is a no-op from the second boot on (it reads the cache the
+# fetcher would read, so "already seeded" and "the fetcher would re-request it"
+# are the same statement). It is a module under src/ rather than a shell script
+# so the decision is unit-tested rather than trusted, and so the existing
+# `src/**` deploy trigger already covers it.
+#
+# `;` and not `&&`, and `exec` on the server: a seeding failure -- CFBD
+# unreachable, quota exhausted -- must not stop the container from serving, and
+# must not put it in a restart loop that re-attempts the bill on every restart.
+# It costs one metered CFBD call per (season, week) in scope, 352 at the
+# 2004-2025 default; narrow it with CFB_SEED_FROM_YEAR / CFB_SEED_TO_YEAR /
+# CFB_SEED_WEEKS. With no CFBD_API_KEY it logs `outcome=blocked` and fetches
+# nothing. See startup_seed.py's module docstring, and
+# `python -m cfb_predictor.startup_seed --check` for a spend-nothing check.
 ENV PYTHONPATH=/app/src
 ENV PUBLIC_MODE=true
 
 EXPOSE 8003
-CMD ["sh", "-c", "uvicorn cfb_predictor.api.main:app --host 0.0.0.0 --port ${PORT:-8003}"]
+CMD ["sh", "-c", "python -m cfb_predictor.startup_seed; exec uvicorn cfb_predictor.api.main:app --host 0.0.0.0 --port ${PORT:-8003}"]
