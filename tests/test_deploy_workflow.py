@@ -168,9 +168,25 @@ def check_image(text: str) -> None:
     assert "build" in j, f"no `build` job to produce the image: {sorted(j)}"
     body = j["build"]
     assert "docker/login-action" in body, "the build job never logs in to a registry"
-    assert re.search(r"password:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}", body), (
-        "GHCR login must use secrets.GITHUB_TOKEN, not a personal access token: "
-        "a PAT is a credential that outlives the repo and has to be rotated by hand"
+    # GITHUB_TOKEN is the target state and the reason this assertion exists: a PAT is
+    # a credential that outlives the repo and has to be rotated by hand.
+    #
+    # GHCR_PAT is accepted ONLY because the package is not linked to this repository.
+    # ghcr.io/kevocado/cfb-predictor is user-scoped, and GITHUB_TOKEN may only write to
+    # packages linked to its own repository -- so the push died with
+    # `denied: permission_denied: write_package` AFTER the image had built and
+    # tagged correctly. Linking a package is a one-time action in package settings and
+    # has no API, so neither a workflow nor CI can do it.
+    #
+    # This is not a new long-lived credential: GHCR_PAT is already a secret on this
+    # repo and is what these images have always been pushed with. If the package is
+    # ever linked, delete the GHCR_PAT alternative here AND in the workflow -- that
+    # linked state is what this test was written to prefer.
+    assert re.search(
+        r"password:\s*\$\{\{\s*secrets\.(?:GITHUB_TOKEN|GHCR_PAT)\s*\}\}", body
+    ), (
+        "GHCR login must use secrets.GITHUB_TOKEN (or GHCR_PAT while the package is "
+        "unlinked) -- some other credential is neither"
     )
     assert re.search(r"registry:\s*ghcr\.io", body), "the registry is not ghcr.io"
     assert f"{IMAGE}:${{{{ github.sha }}}}" in body, (
@@ -316,10 +332,15 @@ def test_each_check_can_fail():
     # exactly what the count assertion exists to prevent.
     broken = {
         "triggers": ("workflow_dispatch:", "workflow_DISABLED:"),
-        "image": ("secrets.GITHUB_TOKEN", "secrets.GHCR_PAT"),
+        # A third credential: neither GITHUB_TOKEN nor the GHCR_PAT that an unlinked
+        # package currently forces, so check_image still has something it can reject.
+        "image": ("secrets.GHCR_PAT", "secrets.REGISTRY_TOKEN"),
         "vps": (f"deploy {SERVICE} ${{{{ github.sha }}}}", f"deploy {SERVICE}"),
         "azure": (GATE_AZURE, "vars.DEPLOY_AZURE != 'false'"),
-        "secrets": ("secrets.GITHUB_TOKEN", "secrets.github_token"),
+        # Lower-cased, so check_no_secret_material's UPPER_CASE rule fires. Anchored on
+        # the credential actually in the file: GITHUB_TOKEN appears zero times now,
+        # and a mutation whose anchor is absent is a mutation that breaks nothing.
+        "secrets": ("secrets.GHCR_PAT", "secrets.ghcr_pat"),
         # A unique anchor: `runs-on: ubuntu-latest` appears once per job, and the
         # count assertion below rejects a mutation that is not unique.
         "shape": (
