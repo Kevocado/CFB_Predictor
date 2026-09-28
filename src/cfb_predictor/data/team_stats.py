@@ -29,9 +29,24 @@ games). The single exception is a 1-yard difference at Incarnate Word
 (245 + 64 = 309 against a reported 308).
 
 Reconciliation constraint. Because both sides come from the same game payload,
-`sum_players(rushing + receiving)` reproduces the team `totalYards` to within a
-small residual: **161 of 272 exact, 260 of 272 (95.6%) within 10 yards, median
-absolute difference 0.00, maximum 29.0** (2023 week 1, keyed on `game_id`).
+`sum_players(rushing + receiving)` reproduces the team `totalYards` closely but
+**not exactly, and not to a bounded error**. Measured 2026-09-28 over the full
+2004-2025 backfill -- 42,190 team-games, 42,172 with a comparable player sum:
+
+| | 22 seasons | 2023 week 1 alone |
+|---|---|---|
+| exact (`diff == 0`) | 60.0% | 59.2% |
+| within 10 yards | 92.3% | 95.6% |
+| within 35 yards | 98.3% | 99.3% |
+| median abs diff | 0.00 | 0.00 |
+| mean abs diff | 3.77 | 1.62 |
+| p90 / p99 abs diff | 8.00 / 54.00 | 5.00 / 12.00 |
+| **max abs diff** | **550.0** | 29.0 |
+
+**The maximum is not bounded, and any claim that it is was measured on too little
+data.** An earlier version of this file asserted "95% within 10 yards, median 0,
+maximum 35" -- true for 2023 week 1, and false twice over at 22-season scale
+(92.3%, and 550 in 2007). The error was extrapolating one week of one season.
 
 That earlier figure of "355 of 356, median error 0.00, sole outlier Robert Morris
 at -14" was **wrong on all three counts** -- it was measured on the broken
@@ -69,14 +84,32 @@ On 2023 week 1, 272 team-games: 161 exact, 260 within 10 yards (95.6%), median
 absolute difference 0.00, maximum 29 yards. Previously 58 exact, median 336,
 maximum 1177.
 
-**The residual is characterised, not eliminated.** 11 of the 12 remaining
-offenders run the same direction — the player sum *exceeds* the team's
-`totalYards` — which points at a definitional difference between CFBD's team
-`totalYards` and the sum of player `rushing + receiving`, with net-rushing
+**The residual is upstream, and it is not a definitional difference.** The earlier
+explanation here was that the player sum systematically *exceeded* the team
+`totalYards`, attributed to a net-rushing treatment of sacks. Checked against the
+raw payload, that is wrong. For Campbell vs Monmouth (2023 week 3, game 401540313)
+CFBD's **team** box score reports 182 rushing and 184 net passing, while the
+**player** box score for the same game reports 133 rushing and 172 receiving --
+verified row by row against the unflattened response, so it is not a flattening or
+dropped-row fault on this side. The two endpoints simply disagree, in both
+directions across the season, and far more in the older seasons: exactness runs
+44.6% in 2004 and 65.1% in 2006, against 68.6% in 2025.
+
+So the honest statement is that CFBD's team and player box scores are two
+independent imperfect records of the same game, and this reconciliation measures
+their disagreement. That makes it a good *sanity check* with a tolerance, and a bad
+exactness test -- which is why the test asserts a median of 0 and a within-10
+share, and deliberately does **not** assert a bound on the maximum.
+
+The original (wrong) reasoning, kept because the correction is the point: it said
+11 of 12 offenders ran the same direction, pointing at a definitional difference
+with net-rushing
 treatment of sacks the obvious candidate. NFL's equivalent identity is verified
 clean (544/544 exact), so this is a property of the CFB source rather than a
 shared bug. A yardage model can be built on this join; it should be validated
-against the same 10-yard tolerance rather than assumed exact.
+against a tolerance rather than assumed exact -- and the tolerance has to be one
+the 22-season distribution actually supports, which is not the one asserted
+above.
 
 There is still no backfill writing team yardage into the tracking DB, and the
 store must be keyed on `game_id` — keying it on the week is what caused the bug
@@ -395,6 +428,30 @@ def reconcile_against_players(
     `passing_yards` is the team's passing total and must **not** be summed here,
     or the quarterback's own row double-counts against `net_passing_yards`.
     """
+    # The player box score names its team column `recent_team`, while this module
+    # keys on `team`. Accept either rather than failing on a `KeyError` from deep
+    # inside a `groupby`, which is where it surfaced: the offline tests build
+    # fixtures with a literal `team` column, so the rename only ever met real
+    # CFBD data, at 22 seasons and 436,801 player-games.
+    #
+    # The name is CFBD's, not ours, and it is misleading -- `player_stats` fills it
+    # from the *game's* team stanza (`teams[].team` in the payload nesting), not
+    # from anything to do with recency, so attribution is per-game and correct.
+    if "team" not in player_frame.columns and "recent_team" in player_frame.columns:
+        player_frame = player_frame.rename(columns={"recent_team": "team"})
+    if "team" not in player_frame.columns:
+        raise ValueError(
+            f"player_frame has no team column; it has {sorted(player_frame.columns)}. "
+            f"CFBD's player box score calls it `recent_team` (filled from the game's own "
+            f"team stanza, so the attribution is per-game and correct despite the name) and "
+            f"this function accepts either spelling. A bare KeyError from inside the "
+            f"groupby below would name the symptom and not the cause."
+        )
+    if "team" not in team_frame.columns:
+        raise ValueError(
+            f"team_frame has no `team` column; it has {sorted(team_frame.columns)}."
+        )
+
     required = ["rushing_yards", "receiving_yards"]
     missing = [column for column in required if column not in player_frame.columns]
     if missing:
