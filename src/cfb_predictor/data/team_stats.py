@@ -33,20 +33,34 @@ Reconciliation constraint. Because both sides come from the same game payload,
 **not exactly, and not to a bounded error**. Measured 2026-09-28 over the full
 2004-2025 backfill -- 42,190 team-games, 42,172 with a comparable player sum:
 
-| | 22 seasons | 2023 week 1 alone |
+**Which population this is.** The 22-season column is the frame **before**
+`attach_schedule_weeks` -- the population `reconcile_against_players` is actually given when
+the join key is `game_id`, since the week is not consulted. On the *attach* path the same
+backfill reconciles 36,515 team-games (13.4% fewer), 59.2% exact, 91.9% within 10, p99 61,
+max 550. Neither figure is wrong; they are different populations, and quoting one without
+saying which is how the one-week tolerance came to look universal.
+
+| | 22 seasons, pre-attach | 2023 week 1 alone |
 |---|---|---|
 | exact (`diff == 0`) | 60.0% | 59.2% |
-| within 10 yards | 92.3% | 95.6% |
-| within 35 yards | 98.3% | 99.3% |
+| within 10 yards | 92.4% | 95.6% |
+| within 35 yards | 98.4% | 99.3% |
 | median abs diff | 0.00 | 0.00 |
-| mean abs diff | 3.77 | 1.62 |
-| p90 / p99 abs diff | 8.00 / 54.00 | 5.00 / 12.00 |
-| **max abs diff** | **550.0** | 29.0 |
+| mean abs diff | 3.39 | 1.62 |
+| p90 / p99 abs diff | 7.00 / 50.00 | 5.00 / 12.00 |
+| max abs diff | 337.0 (2004) | 29.0 |
 
 **The maximum is not bounded, and any claim that it is was measured on too little
 data.** An earlier version of this file asserted "95% within 10 yards, median 0,
 maximum 35" -- true for 2023 week 1, and false twice over at 22-season scale
-(92.3%, and 550 in 2007). The error was extrapolating one week of one season.
+(92.4% within 10, and a worst case of 337). The error was extrapolating one week of
+one season.
+
+**A third correction, to the correction above.** An intermediate version reported "max 550"
+as evidence that the maximum is unbounded. That number was an artefact of `add_total_yards`
+accepting CFBD's `totalYards: 0` as real: the largest residual in 22 seasons was a
+team-game recorded at *zero* total yards against a player sum of 550 -- a missing value,
+not a disagreement. With that fixed, the table above is the measurement.
 
 That earlier figure of "355 of 356, median error 0.00, sole outlier Robert Morris
 at -14" was **wrong on all three counts** -- it was measured on the broken
