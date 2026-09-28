@@ -171,14 +171,38 @@ def test_reconcile_requires_the_player_columns_it_needs():
         )
 
 
-def test_reconcile_refuses_a_team_frame_with_no_schedule_week():
-    """The team box score has no week and CFBD's `week` argument over-returns, so
-    joining on week without attach_schedule_weeks silently duplicates team-games."""
+def test_reconcile_refuses_a_week_keyed_frame_with_no_week():
+    """Without `game_id` on both frames the only key is (season, week, team), which is
+    not unique -- so that path still demands a schedule-derived week. Supplying
+    `game_id` on only one side leaves the same problem, so the requirement stands for
+    the mixed case too."""
     with pytest.raises(ValueError, match="attach_schedule_weeks"):
         team_stats.reconcile_against_players(
-            pd.DataFrame([{"game_id": "g1", "team": "A", "total_yards": 100}]),
+            pd.DataFrame([{"season": 2023, "team": "A", "total_yards": 100}]),
             pd.DataFrame([{"season": 2023, "week": 1, "team": "A", "rushing_yards": 1, "receiving_yards": 2}]),
         )
+    with pytest.raises(ValueError, match="attach_schedule_weeks"):
+        team_stats.reconcile_against_players(
+            pd.DataFrame([{"game_id": "g1", "season": 2023, "team": "A", "total_yards": 100}]),
+            pd.DataFrame([{"season": 2023, "week": 1, "team": "A", "rushing_yards": 1, "receiving_yards": 2}]),
+        )
+
+
+def test_the_game_keyed_path_needs_no_week_at_all():
+    """`attach_schedule_weeks` drops games absent from the schedule and mislabels
+    bowls, so requiring its output cost 31% of the frame for a key the join does not
+    read. With `game_id` on both sides the week is never consulted."""
+    team = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "requested_week": 1, "team": "A", "total_yards": 300},
+        {"game_id": "g2", "season": 2023, "requested_week": 1, "team": "A", "total_yards": 250},
+    ])
+    players = pd.DataFrame([
+        {"game_id": "g1", "season": 2023, "week": 1, "team": "A", "rushing_yards": 90, "receiving_yards": 210},
+        {"game_id": "g2", "season": 2023, "week": 1, "team": "A", "rushing_yards": 80, "receiving_yards": 170},
+    ])
+    out = team_stats.reconcile_against_players(team, players)
+    assert sorted(out["diff"]) == [0, 0], "a week-less team frame must still reconcile exactly"
+    assert out["reconciliation_key"].eq("game_id").all()
 
 
 def test_reconcile_reports_zero_for_consistent_rows():

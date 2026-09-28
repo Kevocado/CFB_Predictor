@@ -365,13 +365,20 @@ def reconcile_against_players(
             f"`types[]` while the team box score nests at `stats[]`, and mixing them up "
             f"produces a silent empty join rather than an error"
         )
-    for name, frame in (("team_frame", team_frame), ("player_frame", player_frame)):
-        if "week" not in frame.columns:
-            raise ValueError(
-                f"{name} has no `week`. The CFBD team box score carries none and its `week` "
-                f"request argument over-returns, so call attach_schedule_weeks(team_frame, "
-                f"schedules) first -- joining on week without it silently duplicates team-games."
-            )
+    # `week` is required only where it is actually used. Since the join is keyed on
+    # `game_id`, requiring a schedule-derived week bought nothing and cost 31% of the
+    # frame: `attach_schedule_weeks` drops any game absent from the schedule, and
+    # CFBD labels *every* bowl `week: 1`, so the recovered week is also wrong for a
+    # third of what survives. The week-keyed path still needs it, and still demands
+    # it -- that path is not unique, which is the whole reason `game_id` exists.
+    if "game_id" not in team_frame.columns or "game_id" not in player_frame.columns:
+        for name, frame in (("team_frame", team_frame), ("player_frame", player_frame)):
+            if "week" not in frame.columns:
+                raise ValueError(
+                    f"{name} has no `week`, and without `game_id` on both frames the only "
+                    f"available key is (season, week, team) -- which is not unique. Either "
+                    f"call attach_schedule_weeks() first, or supply `game_id`."
+                )
 
     if "game_id" in team_frame.columns and "game_id" in player_frame.columns:
         keys = ["game_id", "team"]
@@ -416,8 +423,10 @@ def reconcile_against_players(
             "(game_id, team) must be unique for this join to mean anything")
     player_side = player_frame.copy()
     for side in (team_side, player_side):
-        side["week"] = pd.to_numeric(side["week"], errors="coerce").astype("Int64")
-        side["season"] = pd.to_numeric(side["season"], errors="coerce").astype("Int64")
+        if "week" in side.columns:
+            side["week"] = pd.to_numeric(side["week"], errors="coerce").astype("Int64")
+        if "season" in side.columns:
+            side["season"] = pd.to_numeric(side["season"], errors="coerce").astype("Int64")
 
     player_totals = (
         player_side.groupby(keys, as_index=False)[required]
