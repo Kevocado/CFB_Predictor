@@ -166,6 +166,34 @@ def _read_cache(path):
     return cached if required <= set(cached.columns) else None
 
 
+def _empty_week_frame(season: int, week: int) -> pd.DataFrame:
+    """A schema-correct empty frame for a (season, week) that returned no games.
+
+    A populated `_flatten` result carries `requested_week` and whatever stat
+    categories happened to be present, so an empty week has to declare at least
+    all of that -- never less, or the two are not interchangeable. Two details that
+    are load-bearing rather than cosmetic:
+
+    - `requested_week` is required by `_read_cache` and is not in `KEEP_COLUMNS`.
+      Omit it and the staleness gate rejects the tombstone as pre-dating the
+      column, so the week is re-requested on every run against a metered API --
+      the exact failure the tombstone exists to prevent.
+    - `week` *is* declared, even though a freshly flattened frame has none. `week`
+      is added later by `attach_schedule_weeks`; declaring it here means a
+      tombstoned week and a freshly-fetched one are the same shape to every
+      caller, and an absent column is far easier to mistake for a real zero than
+      an absent row is.
+    """
+    return pd.DataFrame(
+        {
+            "game_id": pd.Series(dtype="object"),
+            "season": pd.Series(dtype="int64"),
+            "requested_week": pd.Series(dtype="int64"),
+            **{column: pd.Series(dtype="object") for column in KEEP_COLUMNS if column not in {"game_id", "season"}},
+        }
+    )
+
+
 def _flatten(raw_games: list, season: int, week: int) -> pd.DataFrame:
     """Walk CFBD's nested game -> team -> stats tree into one row per team-game.
 
@@ -211,7 +239,7 @@ def _flatten(raw_games: list, season: int, week: int) -> pd.DataFrame:
                 record[column] = _to_number(entry.get("stat"))
             rows.append(record)
     if not rows:
-        return pd.DataFrame(columns=KEEP_COLUMNS)
+        return _empty_week_frame(season, week)
     return pd.DataFrame(rows)
 
 
@@ -298,10 +326,20 @@ def fetch_team_stats(
                 continue
             raw = api.get_game_team_stats(year=season, week=week)
             frame = _flatten([g.to_dict() for g in raw], season, week)
+            # Record an empty week rather than skipping it. Skipping looks harmless
+            # and is not: no cache file means the next run re-requests, and most
+            # seasons end before week 15 (2023 has no week 16 at all), so every
+            # re-run of a 2004-2025 sweep pays again for every dead week in range.
+            # That is what makes "just run it again" -- the normal response to an
+            # interrupted backfill -- quietly more expensive each time.
+            #
+            # The tombstone is a real schema-correct empty frame, not a sentinel, so
+            # it concatenates and compares like any other week.
             if frame.empty:
-                continue
+                frame = _empty_week_frame(season, week)
             frame.to_parquet(path, index=False)
-            frames.append(frame)
+            if not frame.empty:
+                frames.append(frame)
     if not frames:
         return pd.DataFrame(columns=KEEP_COLUMNS)
     return pd.concat(frames, ignore_index=True).sort_values(

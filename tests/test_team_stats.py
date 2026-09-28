@@ -134,10 +134,34 @@ def test_opponent_is_reconstructed_by_pivoting_the_two_teams():
     assert frame[frame["team"] == "Kent State"].iloc[0]["opponent"] == "Alabama"
 
 
-def test_flatten_of_nothing_returns_the_declared_columns():
+def test_flatten_of_nothing_declares_a_superset_of_what_a_real_week_carries():
+    """An empty week must declare every field a populated one can have.
+
+    This used to assert `list(empty.columns) == KEEP_COLUMNS`, which was a weaker
+    and wrong thing to pin. `_flatten` stamps `requested_week` on every real row
+    and `KEEP_COLUMNS` does not list it, so the old assertion passed precisely by
+    being the shape that did not match a real frame -- 27 columns against 27 but a
+    different set.
+
+    That asymmetry is not cosmetic. `_read_cache` requires `requested_week`, so an
+    empty frame without it is rejected as pre-dating the column and re-requested
+    every run against a metered API.
+
+    Direction matters, and "equal" is the wrong assertion to reach for: a populated
+    frame only carries the stat categories that game actually had, so exact
+    equality is data-dependent. The invariant that holds for every input is
+    *superset* -- an empty week can never lack a field a populated one has.
+    """
     empty = team_stats._flatten([], season=2023, week=1)
+    populated = team_stats._flatten([_raw_game()], season=2023, week=1)
+
     assert empty.empty
-    assert list(empty.columns) == team_stats.KEEP_COLUMNS
+    assert set(populated.columns) <= set(empty.columns), (
+        "a populated week carried fields the empty week does not declare: "
+        f"{sorted(set(populated.columns) - set(empty.columns))}"
+    )
+    assert set(team_stats.KEEP_COLUMNS) <= set(empty.columns)
+    assert {"game_id", "season", "requested_week", "team"} <= set(empty.columns)
 
 
 # ---------------------------------------------------------------- target
@@ -491,3 +515,94 @@ def test_a_half_populated_game_reports_a_missing_total_not_a_partial_one():
     assert partial != partial, (
         f"a game with only one of the two components must report a missing total, not {partial}")
     assert out.loc["g2", "diff"] != out.loc["g2", "diff"], "and its diff must be missing too"
+
+
+# --- backfill: an empty week must not be re-requested forever -------------------
+#
+# `fetch_team_stats` writes a parquet per (season, week) and skips a week whose
+# frame is empty -- `if frame.empty: continue` -- without writing anything. The
+# next run therefore finds no cache file, re-requests, and skips again. Against a
+# metered API that is not free: 2023 has no week 16, and most seasons end before
+# week 15, so every subsequent run pays again for every dead week in the range.
+#
+# For a 2004-2025 sweep that is a few dozen calls per re-run, and it means the
+# script is not idempotent, so "just run it again" -- the normal response to an
+# interrupted backfill -- silently costs more every time.
+
+class _FakeGamesApi:
+    """Counts requests and serves a configurable payload per (season, week)."""
+
+    def __init__(self, payload_by_week):
+        self.payload_by_week = payload_by_week
+        self.calls: list[tuple[int, int]] = []
+
+    def get_game_team_stats(self, year, week):
+        self.calls.append((year, week))
+        return self.payload_by_week.get(week, [])
+
+
+@pytest.fixture
+def fake_cfbd(monkeypatch):
+    """Install a stub `cfbd` module and hand back the fake GamesApi it built.
+
+    `team_stats` imports `cfbd` lazily inside `_client` and `fetch_team_stats`, so
+    the module has to be patched into `sys.modules` rather than onto the
+    `team_stats` namespace -- and it needs `ApiClient`, `Configuration` and
+    `GamesApi`, because the client is built before the games API is.
+    """
+    import sys
+    import types
+
+    state = {"payload_by_week": {}, "calls": []}
+
+    class _GamesApi:
+        def get_game_team_stats(self, year, week):
+            state["calls"].append((year, week))
+            return state["payload_by_week"].get(week, [])
+
+    class _ApiClient:
+        def __init__(self, *a, **k):
+            self.default_headers: dict[str, str] = {}
+
+    module = types.ModuleType("cfbd")
+    module.ApiClient = _ApiClient
+    module.Configuration = lambda *a, **k: None
+    module.GamesApi = lambda *a, **k: _GamesApi()
+    monkeypatch.setitem(sys.modules, "cfbd", module)
+    return state
+
+
+def test_a_week_with_no_games_is_recorded_so_a_rerun_does_not_re_request_it(monkeypatch, tmp_path, fake_cfbd):
+    from cfb_predictor.data import team_stats
+
+    monkeypatch.setattr(team_stats, "TEAM_STATS_CACHE_DIR", tmp_path)
+    fake_cfbd["payload_by_week"] = {1: [], 2: []}
+
+    team_stats.fetch_team_stats([2023], weeks=[1, 2])
+    assert fake_cfbd["calls"] == [(2023, 1), (2023, 2)], "first run should request both weeks"
+
+    fake_cfbd["calls"].clear()
+    team_stats.fetch_team_stats([2023], weeks=[1, 2])
+    assert fake_cfbd["calls"] == [], (
+        "a re-run must not re-request a week known to be empty; "
+        f"it re-requested {fake_cfbd['calls']}"
+    )
+
+
+def test_a_recorded_empty_week_still_yields_a_frame_the_caller_can_concat(monkeypatch, tmp_path, fake_cfbd):
+    """The tombstone must be a real, schema-correct frame.
+
+    An empty result has to survive `pd.concat` alongside populated weeks, or the
+    backfill's own output is the thing that breaks.
+    """
+    from cfb_predictor.data import team_stats
+
+    monkeypatch.setattr(team_stats, "TEAM_STATS_CACHE_DIR", tmp_path)
+    fake_cfbd["payload_by_week"] = {1: [], 2: []}
+
+    out = team_stats.fetch_team_stats([2023], weeks=[1, 2])
+    assert list(out.columns) == team_stats.KEEP_COLUMNS, (
+        "an all-empty range must still report the documented schema, "
+        f"got {list(out.columns)}"
+    )
+    assert out.empty
