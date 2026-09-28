@@ -5,9 +5,11 @@ the right call for cost and the wrong call for shape: a copied week cannot pick
 up a field the code has started emitting, so a new field lands on the few weeks
 inside the window and nowhere else.
 
-This is not hypothetical, and it is the CFB shape exactly as it was the NFL bug
-fixed in `NFL_Predictor` commit `0c4ea1e`. The committed CFB snapshot is
-`current_week` 5, so with `REBUILD_WEEKS_BEHIND = 1` and
+This is not hypothetical, and it is the CFB shape that the NFL bug fixed in
+`NFL_Predictor` commit `0c4ea1e` describes. That commit is the row-0 version
+and this file is the correction of it -- NFL_Predictor still carries the row-0
+predicate, so do not read the tests here as a description of it. The committed
+CFB snapshot is `current_week` 5, so with `REBUILD_WEEKS_BEHIND = 1` and
 `REBUILD_WEEKS_AHEAD = 3` the window is weeks 4-8 -- and the prop-carrying
 weeks that matter sit *outside* it:
 
@@ -37,16 +39,25 @@ exist to hold down:
 * **"Shape" is not one row's key set.** `predict_props` keys off
   `POSITION_MARKETS`, so prop rows are position-heterogeneous on purpose: a QB
   row carries `passing_yards`, an RB row `rushing_yards`, a WR/TE row
-  `receiving_yards`, and a K/OL/DL/P row no market at all. Every week of the
-  committed artifact has three distinct row shapes for exactly that reason.
-  So the required keys are the INTERSECTION of a week's rows -- the keys the
-  code writes whatever the position -- and *every* row is checked, not row 0.
+  `receiving_yards`. Every week of the committed artifact has three distinct
+  row shapes for exactly that reason. A K/OL/DL/P row cannot show up at all --
+  routes.py filters prop output to {WR, TE, RB, QB} (routes.py:620-622) -- so
+  "a row with no market" is not a shape that exists. The required keys are
+  therefore the position-INVARIANT ones: every key `POSITION_MARKETS` can
+  introduce is subtracted by name, and what is left is intersected across a
+  week's rows. *Every* row is checked against that, not row 0.
 * **Every test week in this file used to be single-shape**, which is why the
   row-0 predicate passed. `_row()` below derives its market keys from the real
-  `POSITION_MARKETS`, and `TestTheShippedArtifactIsAlreadyReconciled` runs the
-  committed 14 MB artifact, so both failure directions are reachable: a week
-  whose row 0 is current while the rest are stale, and a week that is current on
-  every row but whose row 0 is a different position from the sample's.
+  `POSITION_MARKETS`, and `TestRefreshingTheCommittedArtifactBuildsOnlyTheWindow`
+  runs the committed 14 MB artifact, so both failure directions are reachable:
+  a week whose row 0 is current while the rest are stale, and a week that is
+  current on every row but whose row 0 is a different position from the sample's.
+
+Nothing in that artifact class hardcodes a week number, a row count or a
+`current_week`: `refresh-public-snapshot.yml` pushes the refreshed artifact on
+its own several times a day and `tests.yml` runs this file on every push to
+`main`, so a literal about today's artifact would red `main` on a bot commit.
+See the class docstring.
 
 The `data/public_snapshot.json` tests read the committed artifact; they do not
 write it, and `build_snapshot` never does either -- they assert on the week
@@ -60,6 +71,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -129,6 +141,45 @@ def _week(*prop_rows: dict, games: list | None = None) -> dict:
     return {"games": games or [], "predictions": {}, "player_props": list(prop_rows)}
 
 
+def _marks_on(*owners: Any) -> list[Any]:
+    """The `pytestmark`s on `owners`, tolerating any of them being `None`.
+
+    pytest collects marks from three places and stores them differently: a
+    decorator on a function lands on the function, while a class-level or
+    module-level `pytestmark` is read off the class or module. A guard that
+    looks only at the function cannot see the other two.
+    """
+    return [mark for owner in owners if owner is not None for mark in getattr(owner, "pytestmark", [])]
+
+
+def _tests_in(namespace: dict, module_obj: Any, module_name: str) -> list[tuple[str, tuple[Any, ...]]]:
+    """`(name, owners)` for every test in `namespace`, where `owners` is the
+    chain whose marks apply to it: the function, the function and its class,
+    both plus the module -- in the order `_marks_on` reads them."""
+    found: list[tuple[str, tuple[Any, ...]]] = [
+        (name, (obj, None, module_obj))
+        for name, obj in namespace.items()
+        if name.startswith("test_") and inspect.isfunction(obj)
+    ]
+    for cls in list(namespace.values()):
+        if inspect.isclass(cls) and cls.__module__ == module_name:
+            found += [
+                (f"{cls.__name__}.{name}", (member, cls, module_obj))
+                for name, member in vars(cls).items()
+                if name.startswith("test_") and inspect.isfunction(member)
+            ]
+    return found
+
+
+def _tests_in_this_file() -> list[tuple[str, tuple[Any, ...]]]:
+    module = sys.modules[__name__]
+    return _tests_in(vars(module), module, module.__name__)
+
+
+def _marked_network(owners: tuple[Any, ...]) -> bool:
+    return any(mark.name == "network" for mark in _marks_on(*owners))
+
+
 # The row shape before A3, and after. `is_starter`/`depth_slot` are None for
 # every CFB row because CFBD has no starter field -- see
 # tests/test_starter_flag_has_no_upstream.py for the upstream evidence.
@@ -155,10 +206,17 @@ def _row(position: str, *, current: bool = True) -> dict:
     not see. `current=False` is the pre-A3 row: same position, same markets, no
     `is_starter`/`depth_slot`.
 
-    The `carries` and `receptions` models do not exist yet, so the committed
-    artifact has three row shapes per week rather than four. Including them here
-    only makes the fixture more heterogeneous, which is the safe direction for a
-    fixture whose job is to catch a position-blind check.
+    `carries` and `receptions` have no trained model yet, so the current code
+    skips them (models/player_props.py:65) and the committed artifact has three
+    row shapes per prop week. This fixture includes them anyway, which is what
+    the code would emit once they are trained -- and that does NOT make the
+    shape count go to four: a row is one shape per position however many markets
+    that position has (models/player_props.py:30-35 gives RB two and QB one),
+    so QB, RB and WR/TE still account for three shapes between them. What it
+    widens is the spread of keys *within* each position, which is the case a
+    position-blind check cannot survive, and
+    `test_the_position_invariant_subtraction_covers_a_single_position_sample`
+    is the test that actually pins it.
     """
     row = {
         "player_id": f"p-{position}", "player_name": "A. Back", "recent_team": "Alabama",
@@ -175,8 +233,11 @@ def _row(position: str, *, current: bool = True) -> dict:
 def _signature() -> frozenset[str]:
     """The required keys for a week that carries every modelled position.
 
-    Which is the only kind of sample a real week ever is: `_get_player_props_live`
-    returns every player on every active team, so a real week is multi-position.
+    A real week is multi-position -- `_get_player_props_live` returns every
+    player on every active team -- so this is a realistic sample, but the
+    signature it returns is now the same for every sample. See
+    `test_the_position_invariant_subtraction_covers_a_single_position_sample`
+    for what makes that true.
     """
     return ps._position_invariant_keys([_row(p) for p in player_props.POSITION_MARKETS])
 
@@ -217,6 +278,82 @@ class TestMismatchDetection:
             {market for markets in player_props.POSITION_MARKETS.values() for market in markets}
         )
 
+    def test_the_position_invariant_subtraction_covers_a_single_position_sample(self):
+        """The property the intersection alone does not give.
+
+        "A real week is always multi-position" is true of the sample, and it is
+        NOT a property of the code: nothing makes it true, and within one
+        position the market set is already narrower (models/player_props.py:59-66
+        emits a market only `if market in models`, so an RB row can be
+        `rushing_yards` with no `carries` on it while those models are missing).
+        A sample of one position is therefore reachable, and the plain
+        intersection would then demand that position's market of every row in
+        the season.
+        """
+        all_qb = [_row("QB") for _ in range(5)]
+        all_wr = [_row("WR") for _ in range(5)]
+        # The raw samples are not position-invariant...
+        assert frozenset(all_qb[0].keys()) & {"passing_yards"}
+        assert frozenset(all_wr[0].keys()) & {"receiving_yards", "receptions"}
+        # ...and the subtraction is what makes the signature so. Unconditionally,
+        # before any other row is looked at.
+        qb_signature = ps._position_invariant_keys(all_qb)
+        wr_signature = ps._position_invariant_keys(all_wr)
+        assert qb_signature == CURRENT_ROW_KEYS
+        assert wr_signature == CURRENT_ROW_KEYS
+        assert "passing_yards" not in qb_signature
+        assert wr_signature.isdisjoint({"receiving_yards", "receptions"})
+        # One row, too -- the degenerate version of the same thing.
+        assert ps._position_invariant_keys([_row("QB")]) == CURRENT_ROW_KEYS
+        assert ps._position_invariant_keys([_row("WR")]) == CURRENT_ROW_KEYS
+
+        # And through the predicate, both directions: neither a week of WR rows
+        # under an all-QB sample nor a week of QB rows under an all-WR sample is
+        # stale, and the row-0 and plain-intersection versions failed both.
+        assert ps._prop_shape_mismatch(_week(*all_wr, _row("QB")), qb_signature) is False
+        assert ps._prop_shape_mismatch(_week(*all_qb, _row("WR")), wr_signature) is False
+
+    def test_a_single_position_sample_reaches_build_snapshot_and_still_stays_out(self, monkeypatch):
+        """The same property through the real entry point, where the sample is
+        whatever the rebuild window happened to produce."""
+        previous = {
+            "season": 2026,
+            "weeks": {
+                "1": _week(_row("WR"), _row("WR"), _row("WR")),  # reused, current
+                "2": _week(NEW_ROW),                                 # reused, current
+                "3": _week(_row("QB"), _row("QB")),                 # in the window: all QB
+            },
+        }
+        built: list[int] = []
+
+        def fake_build_week(season, week: int) -> dict:
+            built.append(week)
+            return _week(_row("QB"), _row("QB"))
+
+        monkeypatch.setattr(ps, "_build_week", fake_build_week)
+        _pin_window(monkeypatch)
+
+        ps.build_snapshot(previous)
+
+        # The signature came from an all-QB window. Under the row-0 and
+        # plain-intersection versions, week 1 would have been rebuilt here for
+        # lacking `passing_yards` -- a market its WR rows were never going to
+        # carry, every scheduled run, forever.
+        assert 1 not in built
+        assert 2 not in built
+
+    def test_the_signature_still_ignores_a_row_0_only_new_field(self):
+        # Backstop for the intersection half, which is defence in depth: an
+        # unknown key present only on row 0 must not become required either.
+        rows = [_row("RB", current=False)]
+        rows[0]["brand_new_field"] = 1  # not in POSITION_MARKETS, so not subtracted
+        assert ps._position_invariant_keys(rows) == (
+            (CURRENT_ROW_KEYS - {"is_starter", "depth_slot"}) | {"brand_new_field"}
+        )
+        # ...and the same sample used as a reused week is still judged on the
+        # invariant keys, which it is missing.
+        assert ps._prop_shape_mismatch(_week(rows[0], _row("RB")), _signature()) is True
+
     def test_a_row_past_row_zero_being_stale_makes_the_week_stale(self):
         # Row 0 current, rows 1-2 stale. The row-0 version of this predicate
         # called that week current and never rebuilt it -- the shipped artifact
@@ -254,10 +391,25 @@ class TestMismatchDetection:
 
 
 class TestSignature:
+    # CHANGED, not extended: the two tests below used to assert
+    # `_prop_key_signature(...) == frozenset(NEW_ROW.keys())`. `NEW_ROW` is
+    # derived from `OLD_ROW` at module level, and `OLD_ROW` is an RB row, so
+    # that expectation was the signature of ONE row including its market key
+    # `rushing_yards` -- i.e. the row-0 semantics this file exists to hold
+    # down, asserted as though it were the invariant one. They now assert
+    # `CURRENT_ROW_KEYS`, which is what the function returns. The other change
+    # is the week: `_week(NEW_ROW)` is a single-row week, so the probe's sample
+    # is one row, and the subtraction -- not the intersection -- is what makes
+    # that sample come out position-invariant.
+
     def test_prefers_a_week_that_was_just_rebuilt(self):
         weeks = {"1": _week(OLD_ROW), "3": _week(NEW_ROW)}
         # Week 3 was rebuilt, so the current shape is known for free.
-        assert ps._prop_key_signature(2026, 3, weeks, ["1"]) == frozenset(NEW_ROW.keys())
+        assert ps._prop_key_signature(2026, 3, weeks, ["1"]) == CURRENT_ROW_KEYS
+        # Specifically: one rebuilt RB row does not put `rushing_yards` in the
+        # required set. Asserted separately from the equality above because it
+        # is the part the old expectation got wrong.
+        assert "rushing_yards" not in ps._prop_key_signature(2026, 3, weeks, ["1"])
 
     def test_falls_back_to_one_live_probe_when_every_rebuilt_week_is_propless(self, monkeypatch):
         calls = []
@@ -269,7 +421,7 @@ class TestSignature:
         monkeypatch.setattr(ps.routes, "_get_player_props_live", fake)
         weeks = {"1": _week(OLD_ROW), "2": _week(), "3": _week()}
         got = ps._prop_key_signature(2026, 3, weeks, ["1", "2"])
-        assert got == frozenset(NEW_ROW.keys())
+        assert got == CURRENT_ROW_KEYS
         assert calls == [(2026, 3)]  # exactly one probe, not one per week
 
     def test_returns_none_when_it_cannot_tell_rather_than_guessing(self, monkeypatch):
@@ -412,8 +564,9 @@ class TestBuildSnapshotReconciles:
     @pytest.mark.parametrize("row_zero", ["QB", "RB", "WR"])
     def test_a_current_reused_week_is_left_alone_whatever_row_zero_is(self, monkeypatch, row_zero):
         # And the mirror, end to end. The rebuilt week is multi-position on
-        # purpose, exactly as a real one is: that is the only kind of sample a
-        # position-invariant expectation can honestly be read from.
+        # purpose, so the test would still have passed under an intersection-only
+        # signature; the single-position case is
+        # `test_a_single_position_sample_reaches_build_snapshot_and_still_stays_out`.
         previous = {
             "season": 2026,
             "weeks": {
@@ -454,7 +607,7 @@ def _without(week: dict, *keys: str) -> dict:
 
 def _damage_last_row(week: dict, key: str) -> dict:
     """A week whose LAST prop row lost `key` -- the case a row-0 check cannot
-    see, at artifact scale (row 2,498 of 2,498)."""
+    see, at artifact scale (thousands of rows in)."""
     rows = list(week["player_props"])
     rows[-1] = {k: v for k, v in rows[-1].items() if k != key}
     return {**week, "player_props": rows}
@@ -488,14 +641,29 @@ def _refresh(shipped: dict, monkeypatch) -> list[str]:
     return built
 
 
-class TestTheShippedArtifactIsAlreadyReconciled:
-    """The strongest statement available: the committed 14 MB artifact, with
-    its real position mix (three distinct row shapes per prop week, 31,641
-    rows) and the `current_week` 5 that puts the rebuild window on weeks 4-8.
+class TestRefreshingTheCommittedArtifactBuildsOnlyTheWindow:
+    """The strongest statement available: the committed 14 MB artifact, with its
+    real position mix. At the commit that introduced these tests it held 31,641
+    prop rows across three distinct row shapes per prop week, `current_week` 5,
+    and a rebuild window on weeks 4-8 -- and it was ALREADY reconciled, so
+    refreshing it must build the window and nothing else.
 
     Every hand-built week above is single-shape or a three-row sketch, which is
     why the row-0 predicate looked right. This is the fixture that reproduces
     both directions of the bug.
+
+    No test here hardcodes a week number or a row count, and the class name says
+    what the run asserts rather than what the file once found. That is
+    deliberate. `.github/workflows/refresh-public-snapshot.yml` commits and
+    pushes the refreshed artifact four to six times a day on its own, and
+    `tests.yml` runs this file on every push to `main` with no exclusion -- so a
+    literal like `== ["4", "5", "6", "7", "8"]` would red `main` on a bot commit
+    nobody authored, under a class name that points the reader at a
+    reconciliation regression that did not happen. A failure that arrives that
+    often is a failure everyone learns to ignore, which is the thing the
+    artifact pin was supposed to prevent. Every expectation below is computed
+    from the artifact itself, so a red run means the reconciliation changed
+    behaviour, not that the season moved on.
     """
 
     def test_refreshing_it_rebuilds_nothing_outside_the_window(self, monkeypatch, capsys):
@@ -509,7 +677,12 @@ class TestTheShippedArtifactIsAlreadyReconciled:
         # its rows, and was rebuilt anyway because the signature came from week
         # 4's row 0 (a WR) and week 15's row 0 is an RB -- so the subset test
         # failed on `receiving_yards`, a market key, forever.
-        assert built == _window(shipped["current_week"]) == ["4", "5", "6", "7", "8"]
+        #
+        # `_window(...)` is the whole expectation. Do not chain a literal onto
+        # it: with `current_week` 5 the literal is a restatement of the
+        # adjacent call, so it would buy no coverage and would red on the next
+        # scheduled refresh.
+        assert built == _window(shipped["current_week"])
         assert "reconcil" not in out  # neither "prop shape changed" nor the count line
         # The reused weeks came through with every row intact, not just the
         # window's.
@@ -519,33 +692,58 @@ class TestTheShippedArtifactIsAlreadyReconciled:
             for row in week.get("player_props") or []
         )
 
-    def test_the_two_propless_weeks_are_left_alone(self, monkeypatch):
-        # Weeks 14 and 16 carry no props: no rows to be stale, so rebuilding
-        # them would be pure cost. Both are inside MAX_WEEK, so nothing else
-        # keeps them from being rebuilt.
+    def test_the_propless_weeks_are_left_alone(self, monkeypatch):
+        # A week with no prop rows has no rows to be stale, so the
+        # reconciliation has nothing to say about it. As of the commit above
+        # those were weeks 14 and 16 -- inside MAX_WEEK, so nothing but the
+        # predicate keeps them from being rebuilt, and as the season runs they
+        # fill in. Derived rather than named, for the reason in the class
+        # docstring.
         shipped = _shipped()
-        assert not shipped["weeks"]["14"]["player_props"]
-        assert not shipped["weeks"]["16"]["player_props"]
+        window = _window(shipped["current_week"])
+        propless = {key for key, week in shipped["weeks"].items() if not week["player_props"]}
+        assert propless, "the artifact has no prop-less week; this test would pass vacuously"
+        # Only the ones outside the window are in question -- a window week is
+        # built whatever its shape, that is what a window is.
+        reusable = sorted(propless - set(window), key=int)
+        assert reusable, f"every prop-less week is inside the rebuild window {window}"
 
         built = _refresh(shipped, monkeypatch)
         ps.build_snapshot(shipped)
 
-        assert "14" not in built and "16" not in built
+        assert not set(reusable) & set(built)
 
     def test_a_stale_row_deep_inside_a_week_is_still_caught(self, monkeypatch):
         # The inverse, and the reason the test above can be trusted: the
-        # predicate does still say "stale". One row of week 12 -- row 2,498 of
-        # 2,498 -- loses `is_starter`, and week 12 must come back. Row 0 of that
-        # week carries every key, so a row-0 check would have missed it.
+        # predicate does still say "stale". The LAST prop row of the largest
+        # reused week loses `is_starter` -- at the introducing commit, row 2,498
+        # of 2,498 -- and that week must come back. Row 0 of it carries every
+        # key, so a row-0 check would have missed it.
         shipped = _shipped()
         weeks = shipped["weeks"]
-        assert len(weeks["12"]["player_props"]) > 1000
-        damaged = {**shipped, "weeks": {**weeks, "12": _damage_last_row(weeks["12"], "is_starter")}}
+        window = _window(shipped["current_week"])
+        # The row count is a precondition, not the expectation: "deep inside" is
+        # the point, so refuse to run against a week too small to be deep.
+        deep = sorted(
+            (
+                key for key, week in weeks.items()
+                if key not in window and len(week["player_props"]) > 1000
+            ),
+            key=lambda key: (-len(weeks[key]["player_props"]), int(key)),
+        )
+        assert deep, f"no reused week with > 1000 prop rows, window {window}"
+        target = deep[0]
+
+        damaged = {**shipped, "weeks": {**weeks, target: _damage_last_row(weeks[target], "is_starter")}}
 
         built = _refresh(damaged, monkeypatch)
         ps.build_snapshot(damaged)
 
-        assert built == ["4", "5", "6", "7", "8", "12"]
+        # The window, plus the one week this test damaged, and nothing else.
+        # Compared as a multiset, not a list: the window is built first in
+        # ascending order and reconciled weeks are appended afterwards, so the
+        # two orders coincide today and need not as the season runs.
+        assert sorted(built, key=int) == sorted([*window, target], key=int)
 
     def test_a_week_missing_a_market_key_is_not_stale(self, monkeypatch):
         # A market key follows the position, so losing one is not a shape
@@ -554,13 +752,24 @@ class TestTheShippedArtifactIsAlreadyReconciled:
         # the same permanent quota burn as finding 1, only quieter.
         shipped = _shipped()
         weeks = shipped["weeks"]
-        assert any("receiving_yards" in row for row in weeks["9"]["player_props"])
-        reshaped = {**shipped, "weeks": {**weeks, "9": _without(weeks["9"], "receiving_yards")}}
+        window = _window(shipped["current_week"])
+        carriers = sorted(
+            (
+                key for key, week in weeks.items()
+                if key not in window
+                and any("receiving_yards" in row for row in week["player_props"])
+            ),
+            key=int,
+        )
+        assert carriers, f"no reused week carries `receiving_yards`, window {window}"
+        target = carriers[0]
+
+        reshaped = {**shipped, "weeks": {**weeks, target: _without(weeks[target], "receiving_yards")}}
 
         built = _refresh(reshaped, monkeypatch)
         ps.build_snapshot(reshaped)
 
-        assert built == ["4", "5", "6", "7", "8"]
+        assert built == window
 
 
 class TestNoTestHereReachesTheNetwork:
@@ -586,22 +795,63 @@ class TestNoTestHereReachesTheNetwork:
         # needs the network says so and is skipped by default. None of these may:
         # the file has to be reproducible on a machine with no CFBD_API_KEY and
         # no warm cache, which is the machine this bug shipped from.
-        module = sys.modules[__name__]
-        tests = [
-            (name, obj)
-            for name, obj in vars(module).items()
-            if name.startswith("test_") and inspect.isfunction(obj)
-        ]
-        for obj in list(vars(module).values()):
-            if inspect.isclass(obj) and obj.__module__ == module.__name__:
-                tests += [
-                    (f"{obj.__name__}.{name}", member)
-                    for name, member in vars(obj).items()
-                    if name.startswith("test_") and inspect.isfunction(member)
-                ]
-        assert tests, "the scan matched nothing; it would pass vacuously"
-        marked = [
-            name for name, fn in tests
-            if any(mark.name == "network" for mark in getattr(fn, "pytestmark", []))
-        ]
-        assert marked == []
+        found = _tests_in_this_file()
+        assert found, "the scan matched nothing; it would pass vacuously"
+        assert [name for name, owners in found if _marked_network(owners)] == []
+
+    def test_that_scan_would_see_a_class_level_or_module_level_mark(self):
+        """The guard above is vacuous today, so it needs a case of its own.
+
+        A mark can arrive three ways and only one of them sits on the function:
+        a decorator on the test, a class-level `pytestmark`, or a module-level
+        `pytestmark`. Scanning the function alone -- which is what this test used
+        to do -- would have gone blind to the other two, and a guard that quietly
+        stops guarding is worse than no guard, because it is still there to be
+        read.
+        """
+
+        class _MarkedClass:
+            pytestmark = [pytest.mark.network]
+
+            def test_inherited_from_the_class(self):
+                pass
+
+        class _UnmarkedClass:
+            def test_not_marked(self):
+                pass
+
+        @pytest.mark.network
+        def test_decorated():
+            pass
+
+        namespace = {
+            "_MarkedClass": _MarkedClass,
+            "_UnmarkedClass": _UnmarkedClass,
+            "test_decorated": test_decorated,
+        }
+        found = _tests_in(namespace, SimpleNamespace(), __name__)
+        assert {name for name, _ in found} == {
+            "test_decorated",
+            "_MarkedClass.test_inherited_from_the_class",
+            "_UnmarkedClass.test_not_marked",
+        }
+
+        marked = {name for name, owners in found if _marked_network(owners)}
+        # The class-level mark is seen, through the class...
+        assert "_MarkedClass.test_inherited_from_the_class" in marked
+        # ...and the function-level one through the function.
+        assert "test_decorated" in marked
+        # The unmarked class is not reported, so the scan discriminates rather
+        # than blanket-reporting...
+        assert "_UnmarkedClass.test_not_marked" not in marked
+        # ...and the class-level mark is genuinely invisible on the function
+        # itself, which is the whole reason the chain exists.
+        assert not _marks_on(_MarkedClass.test_inherited_from_the_class)
+
+        # A module-level `pytestmark` covers every test in the module, so the
+        # module has to be in the chain too.
+        module_marked = {
+            name for name, owners in _tests_in(namespace, SimpleNamespace(pytestmark=[pytest.mark.network]), __name__)
+            if _marked_network(owners)
+        }
+        assert module_marked == {name for name, _ in found}

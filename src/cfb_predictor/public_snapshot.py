@@ -23,6 +23,7 @@ from fastapi.encoders import jsonable_encoder
 
 from . import config
 from .api import routes
+from .models import player_props
 
 # How many weeks past the current one get freshly rebuilt every run.
 # Everything else reuses the previous snapshot verbatim (if that week was
@@ -51,19 +52,56 @@ def _build_week(season: int, week: int) -> dict:
     return {"games": games, "predictions": predictions, "player_props": player_props}
 
 
+def _market_keys() -> frozenset[str]:
+    """Every key `POSITION_MARKETS` can put on a prop row.
+
+    `predict_props` (models/player_props.py:53-68) emits `anytime_td_prob`
+    unconditionally and then one key per market, and only `if market in models`
+    -- so the reachable set is exactly the union of the per-position lists, and
+    which subset a given row gets is decided inside the position. The callers
+    here treat that set as position-specific, which is the safe reading: a
+    market is present or absent for reasons that have nothing to do with the
+    code's age, so requiring one of these keys says nothing about whether a
+    week predates a change.
+
+    `anytime_td_prob` is deliberately NOT in here: `predict_props` sets it on
+    every row, whatever the position, so it IS position-invariant and is
+    required like any other invariant key.
+    """
+    return frozenset(
+        market for markets in player_props.POSITION_MARKETS.values() for market in markets
+    )
+
+
 def _position_invariant_keys(rows: list[dict]) -> frozenset[str] | None:
     """The prop-row keys the current code emits on EVERY row, whatever the position.
 
     Prop rows are position-heterogeneous, and deliberately so: `predict_props`
     keys off `POSITION_MARKETS` (models/player_props.py:30), so a QB row
-    carries `passing_yards`, an RB row `rushing_yards`, a WR/TE row
-    `receiving_yards`, and a K/OL/DL/P row no market at all. Every week of the
-    committed artifact has three distinct row shapes for exactly that reason.
-    The only keys every row shares are the ones routes.py writes literally
-    (`player_id`, `player_name`, `recent_team`, `position`, `is_starter`,
-    `depth_slot`) plus `anytime_td_prob`, which `predict_props` always sets.
+    carries `passing_yards`, an RB row `rushing_yards`, and a WR/TE row
+    `receiving_yards`/`receptions`. Every week of the committed artifact has
+    three distinct row shapes for exactly that reason. A K/OL/DL/P row cannot
+    appear in a prop week at all -- routes.py filters prop output to
+    {WR, TE, RB, QB} (routes.py:620-622) -- so "no market at all" is not a
+    shape any row here can have. What *does* vary is which of the four modelled
+    positions a week happens to contain, and even that is not a guarantee worth
+    leaning on: within one position the market set is decided per row by
+    `if market in models` (models/player_props.py:65), so an RB row can be
+    `rushing_yards` with no `carries` on it while those models are missing.
 
-    So the signature is the INTERSECTION of the rows, never one row's key set.
+    So the invariant key set is computed two ways, and both are needed:
+
+    * every key that `POSITION_MARKETS` can introduce is SUBTRACTED, by name,
+      from the sample. That makes the result independent of which positions
+      the sample contains, including a single-position sample -- so an all-QB
+      week cannot put `passing_yards` in the signature and then demand it of
+      every WR row in the season. This is the property the check actually
+      needs, and it is unconditional rather than a property of the sample.
+    * what is left is the INTERSECTION of the sample's rows, so any *other*
+      position-specific key added later without touching `POSITION_MARKETS`
+      still cannot leak in by being row 0's shape. Defence in depth, not the
+      mechanism.
+
     Returns None for an empty sample, which the caller reports rather than
     guesses from (see `_prop_key_signature`).
     """
@@ -72,7 +110,7 @@ def _position_invariant_keys(rows: list[dict]) -> frozenset[str] | None:
     invariant = frozenset(rows[0].keys())
     for row in rows[1:]:
         invariant &= row.keys()
-    return invariant
+    return invariant - _market_keys()
 
 
 def _prop_key_signature(
@@ -86,15 +124,15 @@ def _prop_key_signature(
 
     Every rebuilt week's rows are pooled and intersected, because prop rows are
     not one shape (see `_position_invariant_keys`). Pooling costs nothing extra
-    -- those weeks are already built -- and it is what makes the result
-    position-invariant: a single week that happens to be all-QBs would put
-    `passing_yards` in the signature and then demand it of every WR row in the
-    season.
+    -- those weeks are already built. It is defence in depth: the subtraction of
+    `POSITION_MARKETS` is what makes the result position-invariant, and it holds
+    for a sample of one row, so pooling is not what stands between an all-QB
+    week and a season-wide demand for `passing_yards`.
 
-    Only if every rebuilt week is prop-less -- which is the real situation early
-    in a season, when the rebuild window holds no games yet -- does it make a
-    single live call for the current week, and it intersects that sample the
-    same way. Still one call, never one per week.
+    Only if every rebuilt week is prop-less -- which is the case when the rebuild
+    window holds no games, before the season starts -- does it make a single
+    live call for the current week, and it intersects that sample the same way.
+    Still one call, never one per week.
 
     Returns None rather than an empty set when it genuinely cannot tell. An
     empty set would compare equal against every prop-less week and report
@@ -174,15 +212,38 @@ def build_snapshot(previous: dict | None = None) -> dict:
     # emits is left alone rather than caught in a rebuild loop.
     #
     # "Shape" has to mean the position-INVARIANT keys and be checked on every
-    # row, or the reconciliation is wrong in two directions at once: judging
-    # one row leaves the other ~2,000 of the week unchecked (a position-
-    # specific new field would land on row 0 and nowhere else), and judging a
-    # whole row's key set against a *different* row's key set rebuilds a week
-    # that is already current, forever, on the strength of a market key.
+    # row. Both halves are load-bearing and they do different jobs:
     #
-    # This is the same defect and the same fix as NFL_Predictor commit 0c4ea1e,
-    # ported because the two modules are copies of each other and only one of
-    # them had it.
+    #   * Checking every row is what makes the predicate CONSERVATIVE. A
+    #     position-invariant key (`is_starter`, `depth_slot`, `anytime_td_prob`)
+    #     is required of each row independently, so a week where row 0 happens to
+    #     be current and rows 1-2,499 are stale is stale. Judging one row left
+    #     ~2,000 of a week unchecked, and the shipped artifact came out right
+    #     only because every row was stale, so row 0 was stale too.
+    #   * Being position-invariant is what makes it CHEAP. A key that follows the
+    #     position is excluded from `required` by construction, so no mix of
+    #     rows can demand it of a row that legitimately lacks it.
+    #
+    # What this deliberately does NOT catch, because it cannot: a NEW
+    # position-specific field. `POSITION_MARKETS` is per-position, so the most
+    # likely next change to this row shape is a market added to one position --
+    # and the subtraction excludes it from `required` on purpose, before any
+    # row is looked at. So a market added to, say, RB alone will reach the
+    # rebuilt window weeks and no others, exactly the partial-season symptom
+    # this whole block exists to prevent, and nothing here will say so. A
+    # position-specific field needs its own decision: either a one-off rebuild
+    # of the season, or a deliberately widened `required` for that run. Do not
+    # "fix" it by making `required` position-dependent again -- that is the
+    # defect this signature replaced, and it costs a full `_build_week` per
+    # affected week on every scheduled run, against a 1,000-calls/month quota.
+    #
+    # Provenance, because the two repos are copies of each other and this one
+    # is now AHEAD of the other. NFL_Predictor commit 0c4ea1e is the ORIGINAL
+    # row-0 fix: it took props[0]'s key set as the signature and tested it
+    # against props[0]'s keys. That is insufficient in both directions and this
+    # module is the correction of it, not a copy. NFL_Predictor still carries
+    # the row-0 predicate as of this commit and is being fixed separately, so
+    # do not read this file as a description of the current NFL shape.
     signature = _prop_key_signature(season, current_week, weeks, reused)
     if signature is None:
         print("  ! could not determine the current prop shape; reused weeks were NOT reconciled")
