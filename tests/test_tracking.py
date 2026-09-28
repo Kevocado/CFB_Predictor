@@ -451,3 +451,109 @@ def test_get_game_verdict_keeps_reconciling_markets_when_probabilities_are_prese
     assert verdict["ats"]["predicted"] == "home_cover"
     assert verdict["ats"]["hit"] is True
     assert verdict["totals"] is not None
+
+
+def test_track_record_does_not_count_fabricated_ats_hits_from_the_old_build(cfb_store=None):
+    """The aggregate reader, which the first fix left unguarded.
+
+    `_compute_hits` no longer writes a hit flag for a market whose probabilities are
+    missing, and `get_game_verdict` no longer reports one. But `_summarize_games`
+    filtered on `notna()` alone, so every row the old build fabricated still counted
+    towards `pct_ats_correct` — and that aggregate is the number the track-record
+    page leads with.
+
+    The result was the same game described two ways: the per-game verdict said "no
+    ATS market", the track record said "100% ATS accuracy". Demonstrated before the
+    fix:
+
+        get_track_record()['games'] = {'n_resolved': 1, 'pct_ats_correct': 1.0, ...}
+        get_game_verdict('g1')['ats'] = None
+    """
+    import contextlib
+
+    import pandas as pd
+
+    from cfb_predictor.tracking import store
+
+    store.record_game_predictions([_future_game(
+        home_spread_line=-3.5, home_cover_prob=None, away_cover_prob=None,
+        total_line=51.5, over_prob=None, under_prob=None,
+    )])
+    # Simulate the rows the old build wrote: graded anyway, probabilities still null.
+    with contextlib.closing(store._connect()) as conn, conn:
+        conn.execute(
+            "UPDATE game_predictions SET resolved = 1, ats_hit = 1, total_hit = 1, "
+            "moneyline_hit = 1, actual_home_score = 30, actual_away_score = 20 "
+            "WHERE game_id = 'g1'"
+        )
+
+    summary = store._summarize_games(pd.read_sql("SELECT * FROM game_predictions", store._connect()))
+
+    # The moneyline was a real call and stays counted.
+    assert summary["n_resolved"] == 1
+    assert summary["pct_moneyline_correct"] == 1.0
+    # ATS and totals were never called, so there is no percentage to report.
+    assert summary["pct_ats_correct"] is None, (
+        f"a fabricated ATS hit is still in the headline: {summary['pct_ats_correct']}"
+    )
+    assert summary["pct_totals_correct"] is None, (
+        f"a fabricated totals hit is still in the headline: {summary['pct_totals_correct']}"
+    )
+
+
+def test_a_half_present_market_is_not_counted_in_the_aggregate():
+    """One probability present and one missing is not a call either.
+
+    The existing fabricated-row test nulls BOTH probabilities, so a `_pair_present`
+    narrowed to a single column still excludes that row and the test still passes.
+    Verified: applying that narrowing to `store.py` leaves all 26 tests in this file
+    green. This case is what kills it -- `home_cover_prob` is set, so a filter
+    checking only that column lets the row through.
+
+    `_present`'s own docstring names the case: "0.6 against None is not obviously
+    the home side, but it is not a call either, and the same expression reports it
+    as one."
+    """
+    import pandas as pd
+
+    from cfb_predictor.tracking import store
+
+    # A real graded game, and a HIT: home_cover 0.55 > 0.45, home won by 10 > 3.5.
+    store.record_game_predictions([_future_game()])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+
+    # A second game the old build graded against a half-present market.
+    store.record_game_predictions([_future_game(
+        game_id="g2", home_cover_prob=0.6, away_cover_prob=None,
+    )])
+    with contextlib.closing(store._connect()) as conn, conn:
+        conn.execute(
+            "UPDATE game_predictions SET resolved = 1, ats_hit = 0, moneyline_hit = 1, "
+            "actual_home_score = 20, actual_away_score = 24 WHERE game_id = 'g2'"
+        )
+
+    summary = store._summarize_games(pd.read_sql("SELECT * FROM game_predictions", store._connect()))
+
+    # Only the genuine HIT counts. Including the fabricated MISS gives 0.5, so the
+    # two cannot be confused.
+    assert summary["pct_ats_correct"] == 1.0
+
+
+def test_a_genuinely_graded_market_is_still_counted_in_the_aggregate():
+    """The guard must not swallow real ATS and totals rows."""
+    import pandas as pd
+
+    from cfb_predictor.tracking import store
+
+    store.record_game_predictions([_future_game()])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+
+    summary = store._summarize_games(pd.read_sql("SELECT * FROM game_predictions", store._connect()))
+
+    # ATS: `_future_game` has home_cover 0.55 > away 0.45 and home won by 10 > 3.5,
+    # so the call was right.
+    assert summary["pct_ats_correct"] == 1.0
+    # Totals: over_prob == under_prob == 0.5, so `>=` calls over; the game totalled
+    # 50 against a 51.5 line, so the call was wrong. `0.0` is the point -- the row is
+    # *counted*, because it is a real graded market, unlike the fabricated ones.
+    assert summary["pct_totals_correct"] == 0.0
