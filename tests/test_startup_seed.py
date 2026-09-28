@@ -18,6 +18,40 @@ Everything here runs against a temporary directory and an injected executor. **N
 in this file calls CFBD.** The real executor is asserted *not* to be reachable without a
 key, which is the whole safety property, and it is checked with a tripwire that fails if
 `fetch_team_stats` is touched at all.
+
+Mutation-verified by `tests/mutants/startup_seed_mutants.py`, which applies each
+mutation as an exact string replacement, refuses to report a mutation whose anchor did
+not apply (a silent no-op is not a survivor), and restores the tree afterwards:
+17 induced, **17 caught, 0 survived, 0 vacuous**. The ones that matter most:
+
+| mutation | caught by |
+|---|---|
+| re-seed a populated cache | the two-boot idempotency test |
+| remove the COMPLETE short-circuit | the fast-no-op test, `--check` |
+| classify a populated cache as EMPTY | 13 tests, incl. the cost pin |
+| re-bill a partial cache with no flag | the partial-cache test |
+| ignore unreadable files, so a torn cache reads as empty | `..._reported_as_partial_not_as_empty` |
+| seed with no `CFBD_API_KEY` (plan guard) | the missing-key test |
+| remove the executor's own key re-check | `..._never_touches_the_fetcher` |
+| coerce a mistyped scope to the default | the nonsense-scope test |
+| accept a reversed from/to-year | the nonsense-scope test |
+| let a bool fall back to its default | the nonsense-scope test |
+| accept an out-of-range week | the nonsense-scope test |
+| propagate the failure (crashloop) | the failure test, all 3 error types |
+| retry the backfill once (two bills) | the two-boot and resume tests |
+| exit non-zero on failure | the entrypoint-exit test |
+| drop the seeder from `CMD` | the Dockerfile test |
+| chain the seeder with `&&` | the Dockerfile test |
+| drop `exec` before uvicorn | the Dockerfile test |
+
+**One survivor, found and closed.** The first pass had a mutation that ignored
+unreadable files, and it survived: the test only covered a cache with *one* torn file
+and *one* good one, where the state is visibly PARTIAL either way. The case that
+actually costs money is a cache of nothing but torn files — no usable data, so if that
+reads as EMPTY the boot re-bills for files already on disk, forever. The test now
+covers both. The first harness also reported two false SURVIVEs: its `if pytest |
+grep` pipelines ran under `set -o pipefail`, so a failing test made the whole pipeline
+non-zero and read as a pass. The replacement is Python and does not have that shape.
 """
 
 from __future__ import annotations
@@ -183,21 +217,35 @@ def test_an_explicit_resume_flag_is_what_it_takes_to_finish_a_partial_cache(cach
 def test_an_unreadable_cache_file_is_reported_as_partial_not_as_empty(cache):
     """A torn write or a schema-stale file has already been billed once.
 
-    Treating it as an empty cache would re-bill it on every boot, forever, with no way
-    for an operator to tell that from a genuinely fresh volume. It is reported as
-    partial and counted separately, so the log says "broken", not "never fetched".
+    Two cases, and the second is the one that bites. With some usable files present, a
+    torn file is visibly a shortfall. With *only* torn files, the cache has no usable
+    data at all -- and if that reads as EMPTY then every boot re-bills for files that
+    are sitting right there, forever, with nothing in the log to explain the bill. So
+    unreadable is its own state, distinct from both "never fetched" and "complete".
     """
     config = _seed_config()
     team_stats.TEAM_STATS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     (team_stats.TEAM_STATS_CACHE_DIR / "2020_wk01.parquet").write_bytes(b"not parquet")
     _write(2021, 1)
+    calls = []
 
-    plan = startup_seed.plan_seed(config, cache, env={"CFBD_API_KEY": KEY})
+    mixed = run_startup_seed(config, cache, executor=calls.append, env={"CFBD_API_KEY": KEY})
+    assert mixed.plan.state is CacheState.PARTIAL
+    assert mixed.plan.unreadable_pairs == 1
+    assert mixed.plan.cached_pairs == 1
+    assert calls == []
 
-    assert plan.state is CacheState.PARTIAL
-    assert plan.unreadable_pairs == 1
-    assert plan.cached_pairs == 1
-    assert not plan.should_seed
+    (team_stats.TEAM_STATS_CACHE_DIR / "2021_wk01.parquet").write_bytes(b"not parquet")
+    only_torn = startup_seed.plan_seed(config, cache, env={"CFBD_API_KEY": KEY})
+
+    assert only_torn.cached_pairs == 0
+    assert only_torn.unreadable_pairs == 2
+    assert only_torn.state is CacheState.PARTIAL, (
+        "a cache of nothing but unreadable files reported itself empty, so every boot "
+        "would re-bill for data that is already on disk"
+    )
+    assert not only_torn.should_seed
+    assert calls == []
 
 
 def test_a_missing_api_key_blocks_the_seed_instead_of_attempting_it(cache):
@@ -452,6 +500,24 @@ def test_the_real_executor_refuses_without_a_key_and_never_touches_the_fetcher(
 
     with pytest.raises(RuntimeError, match="CFBD_API_KEY"):
         startup_seed.execute_backfill(plan, env={})
+
+
+def test_the_local_footgun_is_documented_because_it_is_real():
+    """A bare invocation on a developer machine really can spend 352 calls.
+
+    `config.py`'s `load_dotenv()` walks up from the module and finds the repository's
+    `.env`, so `CFBD_API_KEY` is populated from disk whether or not it was exported.
+    The container has no `.env` and so cannot hit this -- but anyone running the
+    entrypoint by hand can, and the only thing standing between them and a bill is
+    this note. Verified on 2026-09-28: from a worktree with no `.env` of its own, the
+    key resolved from the parent checkout's.
+    """
+    doc = startup_seed.__doc__ or ""
+    for token in ("load_dotenv", "--check", "backfill_team_stats.py --execute"):
+        assert token in doc, (
+            f"startup_seed.py's docstring no longer mentions {token!r}; the warning that "
+            "a bare local run can spend real quota is the only guard it has"
+        )
 
 
 def test_the_module_says_where_the_backfill_actually_lives():

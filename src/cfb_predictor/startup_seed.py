@@ -55,6 +55,20 @@ The default is the full 2004-2025 sweep because that is the population
 would leave the docstring and the cache describing different things, which is
 the exact confusion this module is here to remove. If 352 calls is not
 affordable, set the scope rather than accepting a partial cache silently.
+
+Running it by hand
+------------------
+`--check` reports the decision and fetches nothing. Use it first.
+
+**On a developer machine, a bare `python -m cfb_predictor.startup_seed` can
+really spend 352 calls**, because `config.py`'s `load_dotenv()` walks up from
+this file and finds the repository's `.env`, so `CFBD_API_KEY` is populated from
+disk even when you never exported it. (In the container there is no `.env` --
+the Dockerfile copies `src/`, `models/` and one data file and nothing else -- so
+the key can only arrive by being injected, which is the intended deployment
+act.) To seed a checkout deliberately, use the script that requires a
+deliberate flag and prints its plan first:
+`scripts/backfill_team_stats.py --execute`.
 """
 
 from __future__ import annotations
