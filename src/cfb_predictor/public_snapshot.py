@@ -238,12 +238,22 @@ def build_snapshot(previous: dict | None = None) -> dict:
     # affected week on every scheduled run, against a 1,000-calls/month quota.
     #
     # Provenance, because the two repos are copies of each other and this one
-    # is now AHEAD of the other. NFL_Predictor commit 0c4ea1e is the ORIGINAL
-    # row-0 fix: it took props[0]'s key set as the signature and tested it
-    # against props[0]'s keys. That is insufficient in both directions and this
-    # module is the correction of it, not a copy. NFL_Predictor still carries
-    # the row-0 predicate as of this commit and is being fixed separately, so
-    # do not read this file as a description of the current NFL shape.
+    # was AHEAD of the other. NFL_Predictor commit 0c4ea1e is the ORIGINAL row-0
+    # fix: it took props[0]'s key set as the signature and tested it against
+    # props[0]'s keys. That is insufficient in both directions and this module
+    # is the correction of it, not a copy.
+    #
+    # As of NFL_Predictor 7f50b82 that is no longer one-sided: NFL carried the
+    # same defect, has now been corrected with the same design (its
+    # `_position_invariant_keys` subtracts ITS `POSITION_MARKETS`, and its
+    # `_get_player_props_live` does not filter by position, so a K/OL/DL/P row
+    # with no market is a shape that exists there and not here). So read this
+    # file as the ORIGIN of the design and NFL as the second repo carrying it --
+    # not as a description of NFL's shape, and not as licence to port NFL's
+    # identifiers here. Copy the construction, and in particular keep the
+    # subtraction: a plain intersection, or a single row, still depends on the
+    # sample happening to be multi-position, which is a fact about the sample
+    # and not about the code.
     signature = _prop_key_signature(season, current_week, weeks, reused)
     if signature is None:
         print("  ! could not determine the current prop shape; reused weeks were NOT reconciled")

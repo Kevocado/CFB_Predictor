@@ -7,8 +7,13 @@ inside the window and nowhere else.
 
 This is not hypothetical, and it is the CFB shape that the NFL bug fixed in
 `NFL_Predictor` commit `0c4ea1e` describes. That commit is the row-0 version
-and this file is the correction of it -- NFL_Predictor still carries the row-0
-predicate, so do not read the tests here as a description of it. The committed
+and this file is the correction of it. NFL_Predictor carried the same defect
+and has since been corrected with the same design (`NFL_Predictor` 7f50b82), so
+neither repo is the current description of the other: read this file as the
+origin of the design, and read the NFL one for what differs there (its
+`POSITION_MARKETS`, and a prop row with no market at all, which its
+`_get_player_props_live` permits and this repo's filters out). Do not port
+identifiers between them; port the construction. The committed
 CFB snapshot is `current_week` 5, so with `REBUILD_WEEKS_BEHIND = 1` and
 `REBUILD_WEEKS_AHEAD = 3` the window is weeks 4-8 -- and the prop-carrying
 weeks that matter sit *outside* it:
