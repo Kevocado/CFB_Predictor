@@ -81,3 +81,32 @@ def test_record_and_reconcile_player_prop_predictions():
     n = store.reconcile_player_prop_predictions(player_stats_df)
 
     assert n == 1
+
+
+def test_anytime_td_confidence_buckets_have_agreed_keys():
+    """Contract test: confidence bucket objects must carry exactly
+    {label, n, hit_rate}. Renaming any key breaks the frontend
+    guard b.n > 0 and the section silently never renders."""
+    store.record_player_prop_predictions([
+        {"game_id": "2025_01_BAL_KC", "player_id": "p1", "player_name": "Runner",
+         "market": "anytime_td", "predicted_value": 0.55},
+        {"game_id": "2025_01_BAL_KC", "player_id": "p2", "player_name": "Passer",
+         "market": "anytime_td", "predicted_value": 0.65},
+        {"game_id": "2025_01_BAL_KC", "player_id": "p3", "player_name": "Rusher",
+         "market": "anytime_td", "predicted_value": 0.75},
+    ])
+    assert store.reconcile_player_prop_predictions(pd.DataFrame([
+        {"game_id": "2025_01_BAL_KC", "player_id": "p1", "rushing_tds": 1, "receiving_tds": 0, "passing_tds": 0},
+        {"game_id": "2025_01_BAL_KC", "player_id": "p2", "rushing_tds": 0, "receiving_tds": 0, "passing_tds": 0},
+        {"game_id": "2025_01_BAL_KC", "player_id": "p3", "rushing_tds": 0, "receiving_tds": 1, "passing_tds": 0},
+    ])) == 3
+    buckets = store.get_track_record()["player_props"]["anytime_td"]["confidence_buckets"]
+    agreed_keys = {"label", "n", "hit_rate"}
+    for bucket in buckets:
+        assert set(bucket.keys()) == agreed_keys, (
+            f"bucket {bucket} has keys {set(bucket.keys())}, "
+            f"expected exactly {agreed_keys}"
+        )
+    assert len(buckets) == 3
+    assert buckets[0]["n"] >= 0
+    assert buckets[0]["hit_rate"] is None or isinstance(buckets[0]["hit_rate"], float)
