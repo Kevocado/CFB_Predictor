@@ -442,11 +442,19 @@ def reconcile_against_players(
     hand-built fixtures and pre-`game_id` callers still work -- but a week-keyed
     reconciliation cannot be exact, and says so in `reconciliation_key`.
 
-    **Both frames must still carry a `week` sourced from the schedule**
-    (`attach_schedule_weeks` for the team side; the player frame picks its week
-    up from a schedule merge). CFBD's team box score has no `week` field and its
-    `week` request argument over-returns, so the team frame's own week is
-    unreliable until replaced.
+    **`week` is required only on the fallback path.** When both frames carry
+    `game_id` the join never reads a week, so none is demanded. It used to be
+    demanded of both frames unconditionally, sourced from the schedule via
+    `attach_schedule_weeks` -- and that requirement bought nothing while costing
+    31% of the frame, because `attach_schedule_weeks` drops any game absent from
+    the schedule and the schedule is FBS-filtered, so every game against an FCS
+    opponent was excluded for a property of the schedule rather than of the data.
+    The recovered week was also wrong for a third of what survived, since CFBD
+    labels *every* bowl `week: 1`. Without `game_id` on both frames the only key
+    left is `(season, week, team)`, and there a week is genuinely required and
+    genuinely has to come from the schedule: CFBD's team box score has no `week`
+    field and its `week` request argument over-returns, so the team frame's own
+    week is unreliable until replaced.
 
     `player_frame` is the CFB player box score with `rushing_yards` and
     `receiving_yards` already extracted per player-game (see

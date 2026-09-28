@@ -489,6 +489,36 @@ def test_reconcile_refuses_a_frame_with_no_game_id_by_default():
     # ...and the opt-in still reconciles, for the hand-built fixtures above.
 
 
+def test_reconcile_says_which_key_it_falls_back_to_when_there_is_no_week():
+    """The other refusal, and the one a reader hits first.
+
+    With no `game_id` on both frames the only key left is `(season, week, team)`,
+    so a `week` is genuinely required there -- and the message is the only place
+    that says so, naming both remedies. It is a different raise from the
+    `allow_week_key` gate above (which says "NOT unique" for a different reason),
+    so that test does not reach it.
+
+    This is the error that must *not* push a reader back into calling
+    `attach_schedule_weeks` unconditionally: on the `game_id` path that call costs
+    31% of the frame, which is the regression the docstring used to recommend.
+    """
+    team = pd.DataFrame([{"season": 2023, "team": "A", "total_yards": 340}])
+    players = pd.DataFrame([
+        {"season": 2023, "team": "A", "rushing_yards": 90, "receiving_yards": 250},
+    ])
+    with pytest.raises(ValueError) as excinfo:
+        team_stats.reconcile_against_players(team, players)
+    message = str(excinfo.value)
+    # Assert the remedy phrases specifically, not bare substrings: "game_id" also
+    # appears earlier in the sentence ("without `game_id` on both frames"), so a
+    # bare check passes even if the instruction to supply it is deleted. That
+    # mutant survived the first version of this test.
+    assert "attach_schedule_weeks" in message, message
+    assert "supply `game_id`" in message, message
+    # names the frame that is short, so a caller with two frames knows which to fix
+    assert "team_frame" in message, message
+
+
 def test_attach_schedule_weeks_refuses_to_synthesise_a_week():
     """`fetch_schedules` returns an empty frame when the cache is cold and CFBD is
     unreachable -- the documented cold-start case, and the reason this branch
