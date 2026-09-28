@@ -182,6 +182,58 @@ def _flatten_player_game_stats(raw_games: list[dict], games_df: pd.DataFrame, se
                     if column is None:
                         continue
                     for athlete in stat_type.get("athletes", []) or []:
+                        # ------------------------------------------------------------------
+                        # PROVENANCE: CFBD's game-player-stats endpoint carries NO starter
+                        # field, and none may be derived here. Read before "fixing" this.
+                        #
+                        # The athlete object has exactly three keys -- `id`, `name`, `stat`.
+                        # Verified three independent ways against cfbd 5.31.0 on
+                        # 2026-09-28:
+                        #   1. live get_game_player_stats(year=2026, week=4): 123 games,
+                        #      64,007 athlete rows, and the set of athlete key sets is
+                        #      exactly {('id', 'name', 'stat')}.
+                        #   2. grep -rniE 'starter|is_starter|did_play|home_start|away_start'
+                        #      over the installed package: 0 hits. (control: `athlete` -> 114)
+                        #   3. cfbd/models/game_player_stat_player.py:32 declares
+                        #      __properties = ["id", "name", "stat"].
+                        #
+                        # So the API emits `is_starter: None` and `depth_slot: None` on
+                        # every prop row (api/routes.py::_get_player_props_live). None
+                        # means "this sport has no depth-chart data"; False would assert
+                        # "this player is known to be on the bench", which is a statement
+                        # about data this project does not have. The UI renders them
+                        # differently -- None draws a visible "Projected order -- no
+                        # depth-chart feed" line, False draws a bench row.
+                        #
+                        # TWO HEURISTICS ARE AVAILABLE AND BOTH ARE WRONG. Do not add
+                        # either without a real depth-chart source.
+                        #
+                        #   (a) LIST POSITION IS NOT A STARTER PROXY. Within a stat
+                        #       type, CFBD returns athletes in descending order OF THAT
+                        #       STAT'S VALUE -- measured on week 4: 108/108 passing/YDS
+                        #       groups, 246/246 receiving/YDS, 246/246 rushing/YDS. That
+                        #       is a ranking of one week's production, not a lineup: a
+                        #       backup who happens to lead the team in a category ranks
+                        #       first. And it is not even a consistent rule across stat
+                        #       types -- receiving/REC is descending in 19.5% of groups
+                        #       and rushing/CAR in 23.6% -- so it cannot be leaned on as
+                        #       a depth signal either.
+                        #
+                        #   (b) "APPEARED IN THE BOX SCORE" IS NOT A STARTER PROXY.
+                        #       That set is starters UNION every backup who checked in,
+                        #       plus a `" Team"` total row with a negative id. Measured
+                        #       on week 4: 246 teams, 741 negative-id `" Team"` rows, and
+                        #       a MEDIAN OF 35 distinct positive-id athletes per team
+                        #       (min 26, max 56) against an 11-man lineup. Dropping the
+                        #       team row (which `is_real_player_id` above already does)
+                        #       still leaves every backup in the set, so membership does
+                        #       not imply a start.
+                        #
+                        # If a depth-chart feed is ever added, the honest shape is the
+                        # NFL one: a separate module that joins onto player_name, sets
+                        # None when the feed is missing, and is allowed to fail without
+                        # taking the props down. Do not make it a column of this frame.
+                        # ------------------------------------------------------------------
                         # CFBD puts team totals in this same `athletes` list, as
                         # an entry with a NEGATIVE id and the name " Team". Left
                         # alone it becomes a player row, the model predicts an
