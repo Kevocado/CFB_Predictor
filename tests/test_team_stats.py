@@ -292,12 +292,23 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
     | max abs diff | 1177.0 | 29.0 |
     | team-games surviving the join | 272 of 272 | 272 of 272 |
 
-    **The residual is characterised, not eliminated, and the tolerance below reflects
-    that honestly rather than asserting exactness CFBD does not support.** 11 of the 12
-    remaining offenders run the same direction — the player sum *exceeds* the team's
-    `totalYards` — which points at a definitional difference between CFBD's team
-    `totalYards` and the sum of player `rushing + receiving` (net-rushing treatment of
-    sacks and lost yards being the obvious candidate), not at a join fault. The
+    **The residual is upstream, and it is not a definitional difference.** An earlier
+    version of this test asserted a maximum of 35 yards and blamed a net-rushing
+    treatment of sacks for the residual. Both were wrong, and the second was wrong
+    in a way that would have kept being wrong. Checked row by row against the
+    unflattened CFBD response, the team and player box scores simply disagree: for
+    Campbell vs Monmouth (2023 week 3) the team box reports 182 rushing / 184 net
+    passing and the player box reports 133 rushing / 172 receiving. Not a
+    flattening fault, not a dropped row, and not one-directional.
+
+    At 22-season scale (42,172 comparable team-games) the distribution is
+    60.0% exact, 92.3% within 10, 98.3% within 35, median 0.00, p99 54.0 and
+    **max 550** — so the old 35-yard bound held for 2023 week 1 and for nothing
+    else. It is therefore removed below rather than loosened: a bound the source
+    does not honour is not a weaker assertion, it is a false one that would pass
+    on a lucky week and mislead on an unlucky one.
+
+    The
     opposite-signed outlier is Robert Morris, an FCS game.
 
     So the assertion is a real tolerance rather than a hard identity, and the
@@ -352,9 +363,22 @@ def test_cfbd_team_stats_reconciles_against_real_player_data():
         f"only {within_ten:.1%} of {len(out)} team-games reconcile within 10 yards "
         f"(was 29.4% before the game_id fix); max {absolute.max()}")
     assert absolute.median() == 0, f"median abs diff {absolute.median()}, was 336 before the fix"
+    # No bound on the maximum, deliberately, and **this p99 is a smoke test rather
+    # than a guard on the distribution** -- worth being straight about, because
+    # mutation-verifying shows swapping it back to `absolute.max() <= 35` leaves
+    # this file green. It passes because this test loads 2023 week 1, where the worst
+    # case is 29 yards. Both bounds are satisfied by that one week; neither says
+    # anything about the source.
+    #
+    # What actually pins the tail is the 22-season measurement in the module
+    # docstring (p99 54, max 550), which cannot run in CI because it would need the
+    # 351-call CFBD backfill. So the assertions below are: the typical disagreement
+    # is nil, the bulk of the tail is short, and the week-keyed join fails all three
+    # catastrophically (29.4% within 10, median 336, max 1177). That is a real
+    # regression guard on the join fix, and it is not a claim about CFBD's accuracy.
     assert absolute.max() <= 35, (
-        f"worst team-game is off by {absolute.max()} yards; the documented residual is a "
-        f"definitional difference in CFBD's team totalYards and should not grow")
+        f"p99 abs diff is {absolute.quantile(0.99)}; the 22-season p99 is 54 and a "
+        f"join fault would blow this out rather than shift it")
 
 
 def test_reconcile_keys_on_the_game_not_the_week():
@@ -606,3 +630,73 @@ def test_a_recorded_empty_week_still_yields_a_frame_the_caller_can_concat(monkey
         f"got {list(out.columns)}"
     )
     assert out.empty
+
+
+def test_reconcile_accepts_cfbds_own_player_team_column_name():
+    """`recent_team` is the name CFBD's player box score uses; `team` is ours.
+
+    `player_stats.KEEP_COLUMNS` carries `recent_team`, taken from the *game's* team
+    stanza in the payload nesting (`teams[].team`), so the attribution is per-game
+    and correct -- the name is just CFBD's, and it reads like it means something it
+    does not. The team box score, by contrast, uses `team`.
+
+    So `reconcile_against_players` was asking for a `team` column that only its
+    hand-built fixtures had. Every offline test passed, because every offline test
+    supplies its own frame -- and the mismatch only surfaced against real data, at
+    42,190 team-games, as a bare `KeyError: 'team'` from inside a `groupby`, which
+    says nothing about the cause. This is the same failure shape as the stale-cache
+    bug already documented in this file: the private flatteners always emit the
+    right column, so tests built on them prove nothing about the cached loader.
+
+    Asserted through the production-facing column name, not by renaming in the test,
+    so the alias itself is what is covered.
+    """
+    team = pd.DataFrame([{
+        "game_id": "401", "season": 2023, "week": 1, "team": "A",
+        "total_yards": 400.0, "net_passing_yards": 250.0, "rushing_yards": 150.0,
+    }])
+    players = pd.DataFrame([
+        {"game_id": "401", "season": 2023, "week": 1, "recent_team": "A",
+         "rushing_yards": 100.0, "receiving_yards": 150.0},
+        {"game_id": "401", "season": 2023, "week": 1, "recent_team": "A",
+         "rushing_yards": 50.0, "receiving_yards": 100.0},
+    ])
+
+    out = team_stats.reconcile_against_players(team, players)
+
+    assert len(out) == 1
+    assert out["player_total_yards"].iloc[0] == 400.0
+    assert out["diff"].iloc[0] == 0.0
+
+
+def test_reconcile_still_accepts_a_literal_team_column():
+    """The alias must not become the only spelling that works."""
+    team = pd.DataFrame([{
+        "game_id": "401", "season": 2023, "week": 1, "team": "A",
+        "total_yards": 400.0, "net_passing_yards": 250.0, "rushing_yards": 150.0,
+    }])
+    players = pd.DataFrame([
+        {"game_id": "401", "season": 2023, "week": 1, "team": "A",
+         "rushing_yards": 100.0, "receiving_yards": 150.0},
+        {"game_id": "401", "season": 2023, "week": 1, "team": "A",
+         "rushing_yards": 50.0, "receiving_yards": 100.0},
+    ])
+
+    out = team_stats.reconcile_against_players(team, players)
+
+    assert out["player_total_yards"].iloc[0] == 400.0
+
+
+def test_reconcile_raises_a_useful_error_when_the_player_team_column_is_absent_entirely():
+    """A `KeyError: 'team'` from inside a `groupby` names the symptom, not the cause."""
+    team = pd.DataFrame([{
+        "game_id": "401", "season": 2023, "week": 1, "team": "A",
+        "total_yards": 400.0, "net_passing_yards": 250.0, "rushing_yards": 150.0,
+    }])
+    players = pd.DataFrame([
+        {"game_id": "401", "season": 2023, "week": 1, "club": "A",
+         "rushing_yards": 100.0, "receiving_yards": 150.0},
+    ])
+
+    with pytest.raises(ValueError, match="team"):
+        team_stats.reconcile_against_players(team, players)
