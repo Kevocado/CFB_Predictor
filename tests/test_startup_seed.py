@@ -22,7 +22,8 @@ key, which is the whole safety property, and it is checked with a tripwire that 
 Mutation-verified by `tests/mutants/startup_seed_mutants.py`, which applies each
 mutation as an exact string replacement, refuses to report a mutation whose anchor did
 not apply (a silent no-op is not a survivor), and restores the tree afterwards:
-17 induced, **17 caught, 0 survived, 0 vacuous**. The ones that matter most:
+**28 induced, 28 caught, 0 survived, 0 vacuous** (17 + 11 added for the defects
+below). The ones that matter most:
 
 | mutation | caught by |
 |---|---|
@@ -43,6 +44,15 @@ not apply (a silent no-op is not a survivor), and restores the tree afterwards:
 | drop the seeder from `CMD` | the Dockerfile test |
 | chain the seeder with `&&` | the Dockerfile test |
 | drop `exec` before uvicorn | the Dockerfile test |
+| drop `error=` from the status line | `..._puts_the_error_on_the_printed_line` |
+| `reason=` back to the plan's rationale | `..._explains_the_failure_and_not_the_plan` |
+| describe a failure as a success | `..._explains_the_failure_and_not_the_plan` |
+| skip the post-attempt re-count | `..._reports_what_it_actually_wrote` |
+| name a path absent from the image | `..._names_nothing_absent_from_the_image` |
+| drop the `.env` trap from the advice | `..._names_the_compose_exec_form_and_the_env_trap` |
+| a blank variable falls back to its default | `..._set_but_blank_is_refused` |
+| silently ignore vars set while seeding is off | `..._set_while_seeding_is_off_is_reported` |
+| `--check` flattens `blocked` to `skipped` | `..._blank_master_switch_reads_as_blocked` |
 
 **One survivor, found and closed.** The first pass had a mutation that ignored
 unreadable files, and it survived: the test only covered a cache with *one* torn file
@@ -52,6 +62,19 @@ reads as EMPTY the boot re-bills for files already on disk, forever. The test no
 covers both. The first harness also reported two false SURVIVEs: its `if pytest |
 grep` pipelines ran under `set -o pipefail`, so a failing test made the whole pipeline
 non-zero and read as a pass. The replacement is Python and does not have that shape.
+
+**Zero survivors in the 2026-09-28 round, and one correction worth recording.** The
+brief for that work predicted an inverted boolean or a mis-ordered conditional
+behind the production line reading `action=seed outcome=failed`. There is neither:
+`run_startup_seed` sets `Outcome.SEEDED` on the success path and reaches
+`Outcome.FAILED` only inside `except Exception`, and
+`test_a_successful_seed_says_seeded_and_never_says_failed` passes against
+origin/main's source **unmodified** — verified by swapping the old module back in and
+re-running this file, where 9 of the 10 tests added that round go red. The `failed`
+was true; the line was untruthful about everything *around* it. The mutant
+`a successful seed reports outcome=failed` is therefore kept as a guard, and as the
+control that lets the other four new mutants be read as reproductions of real
+defects rather than of a bug that was never there.
 """
 
 from __future__ import annotations
@@ -481,6 +504,369 @@ def test_the_status_line_names_outcome_state_and_estimated_cost(cache, capsys):
     for token in ("cache=", "action=", "outcome=", "estimated_calls="):
         assert token in out, out
     assert re.search(r"estimated_calls=\d+", out)
+
+
+# ------------------------------------------------- the line an operator reads
+#
+# Everything above tests the *decision*. This section tests the one line a human
+# is actually going to read at 3am, and it exists because that line was wrong on
+# 2026-09-28 in production:
+#
+#     startup_seed: cache=partial present=53/352 unreadable=0 action=seed \
+# outcome=failed reason=CFB_SEED_RESUME_PARTIAL is set; filling 299 missing \
+# season-week(s) scope=2004-2025 weeks=16 estimated_calls=299
+#
+# Three separate things wrong with it, and the middle one is the one that matters:
+#
+# 1. `reason=` was `plan.reason` -- the *decision's* rationale, printed under the
+#    outcome's name. So a line saying `outcome=failed` explained itself by
+#    describing a seed that was still to come, which is a contradiction an
+#    operator cannot resolve at 3am and reads as "the tool is confused".
+# 2. There was no error. `result.error` was computed and held on the result, and
+#    rendered by `_log` alone -- through `logger.info`, with nothing in the
+#    package configuring logging. In the boot process (a bare
+#    `python -m cfb_predictor.startup_seed`, before uvicorn exists) the root
+#    logger has no handlers, the effective level is WARNING, and
+#    `logging.lastResort` is WARNING, so `_log` printed *nothing*. The one
+#    channel that does reach the operator was the only channel with no field for
+#    the error.
+# 3. The advice named `scripts/backfill_team_stats.py --execute`, and `scripts/`
+#    is not in the image.
+
+
+def _image_top_level(dockerfile: str) -> set[str]:
+    """The first path segment of everything the image will hold under `/app`.
+
+    Derived from the Dockerfile rather than hard-coded, so "absent from the
+    image" keeps meaning that when the image changes. `COPY` contributes its
+    source path; `RUN mkdir -p` contributes its `/app/` destinations.
+    """
+    entries: set[str] = set()
+    for line in dockerfile.splitlines():
+        parts = line.strip().split()
+        if parts[:1] == ["COPY"]:
+            for source in parts[1:-1]:
+                top = source.strip("./").split("/")[0]
+                if top:
+                    entries.add(top)
+        if parts[:1] == ["RUN"] and "mkdir" in line:
+            for token in line.split("mkdir", 1)[1].split():
+                if token.startswith("-") or not token.startswith("/app/"):
+                    continue
+                entries.add(token[len("/app/"):].split("/")[0])
+    return entries
+
+
+IMAGE_TOP_LEVEL = _image_top_level(DOCKERFILE.read_text())
+
+
+def test_a_successful_seed_says_seeded_and_never_says_failed(cache, capsys):
+    """The inverse of the production line, asserted on the line that gets printed.
+
+    Not `result.outcome is Outcome.SEEDED` -- that is a statement about the
+    return value, and the defect that shipped was a statement about the *line*.
+    This asserts on stdout, through `main`, because stdout is what
+    `docker compose logs` shows and what the operator reads.
+
+    `outcome=failed` must be *absent*, not merely outnumbered by `outcome=seeded`:
+    the bug is the word `failed` appearing where it does not belong, so its
+    absence is the property, and a line containing both would fail.
+    """
+    startup_seed.main(
+        [], config=_seed_config(), cache_dir=cache, executor=_recorder(), env=ENV
+    )
+
+    out = capsys.readouterr().out
+    assert "action=seed" in out, out
+    assert "outcome=seeded" in out, out
+    assert "outcome=failed" not in out, (
+        f"a seed that completed reported itself as failed:\n{out}"
+    )
+    assert "error=" not in out, f"a successful run carried an error field:\n{out}"
+
+
+def test_a_failed_run_puts_the_error_on_the_printed_line(cache, capsys):
+    """The error must survive the trip to the operator.
+
+    It used to live only in the `logger.info` call, and nothing configures
+    logging, so in the boot process it went nowhere. Asserted on stdout because
+    that is the channel that works; the log record is a courtesy, not the
+    delivery mechanism.
+    """
+    def boom(plan):
+        raise RuntimeError("cfbd is unreachable")
+
+    startup_seed.main([], config=_seed_config(), cache_dir=cache, executor=boom, env=ENV)
+
+    out = capsys.readouterr().out
+    assert "outcome=failed" in out, out
+    assert "error=RuntimeError: cfbd is unreachable" in out, (
+        f"the status line does not carry the error, so the only diagnosis of a failed "
+        f"seed is dropped on the floor:\n{out}"
+    )
+
+
+def test_the_failure_reason_explains_the_failure_and_not_the_plan(cache, capsys):
+    """`reason=` and `plan_reason=` are two different questions, and stay so.
+
+    This is the production contradiction, reduced to one test. The decision's
+    rationale ("CFB_SEED_RESUME_PARTIAL is set; filling 1 missing season-week(s)")
+    describes a seed still to come; printing it under `reason=` beside
+    `outcome=failed` gives an operator two statements that cannot both be acted
+    on. So once a fetch is attempted, the two must be distinct fields, and
+    `reason=` must mention the failure.
+    """
+    config = _seed_config(CFB_SEED_RESUME_PARTIAL="true")
+    _write(2020, 1)
+
+    def boom(plan):
+        raise RuntimeError("cfbd is unreachable")
+
+    startup_seed.main([], config=config, cache_dir=cache, executor=boom, env=ENV)
+
+    out = capsys.readouterr().out
+    plan_reason = re.search(r"plan_reason=(.*?) outcome=", out)
+    # The lookbehind is load-bearing: `plan_reason=` contains `reason=`, so a
+    # plain search for the latter matches inside the former.
+    reason = re.search(r"(?<!plan_)reason=(the backfill raised.*?) error=", out)
+    assert plan_reason and reason, out
+    assert plan_reason.group(1) != reason.group(1), (
+        "plan_reason and reason are the same text, so the line is still explaining an "
+        f"outcome with the decision's rationale:\n{out}"
+    )
+    assert "CFB_SEED_RESUME_PARTIAL is set" in plan_reason.group(1), out
+    assert "raised" in reason.group(1), (
+        f"the reason for a failed run does not say it failed:\n{out}"
+    )
+
+
+def test_the_reason_is_not_printed_twice_when_nothing_was_attempted(cache, capsys):
+    """`plan_reason=` appears only once a fetch could diverge from the plan.
+
+    When nothing was attempted -- skipped, blocked, `--check` -- `reason` *is* the
+    plan's rationale, so printing both says the longest field in the line twice
+    for no information. The partial-cache advice is the longest field there is,
+    and it is read at 3am.
+    """
+    config = _seed_config()
+    _write(2020, 1)
+
+    startup_seed.main(["--check"], config=config, cache_dir=cache, env=ENV)
+
+    out = capsys.readouterr().out
+    assert "plan_reason=" not in out, (
+        f"nothing was fetched, so the plan's rationale and the outcome's are the same "
+        f"sentence and one of them is noise:\n{out}"
+    )
+    # Counted, not just tested for presence: the advice names
+    # CFB_SEED_RESUME_PARTIAL more than once on purpose, so the property is that
+    # the whole rationale appears once.
+    plan_reason = startup_seed.plan_seed(config, cache, env=ENV).reason
+    assert out.count(plan_reason) == 1, (
+        f"the same rationale is on the line {out.count(plan_reason)} times:\n{out}"
+    )
+
+
+def test_a_run_that_stops_partway_reports_what_it_actually_wrote(cache, capsys):
+    """The before and after counts are both on the line, and they are counted apart.
+
+    `fetch_team_stats` writes one file per (season, week) as it goes, so a run
+    that raises leaves already-paid-for files behind. "failed" and "succeeded" are
+    both statements about files, and after a partial write those are different
+    questions: the operator's next move differs completely depending on whether
+    the 91 files are on disk or not. Only a count taken *after* the attempt can
+    say so.
+    """
+    config = _seed_config(CFB_SEED_RESUME_PARTIAL="true")
+    _write(2020, 1)
+
+    def half_then_die(plan):
+        _write(2021, 1)
+        raise RuntimeError("cfbd is unreachable")
+
+    startup_seed.main([], config=config, cache_dir=cache, executor=half_then_die, env=ENV)
+
+    out = capsys.readouterr().out
+    assert "present=1/2" in out, f"the pre-decision count is gone:\n{out}"
+    assert "cached_now=2/2" in out, (
+        f"the line does not report what the run actually left on disk:\n{out}"
+    )
+
+
+def test_the_partial_cache_advice_names_nothing_absent_from_the_image(cache):
+    """Advice has to be runnable where it is read, and this line is read in a container.
+
+    The old text told an operator to run `scripts/backfill_team_stats.py
+    --execute`. The Dockerfile copies `pyproject.toml`, `src/`, `models/` and
+    `data/public_snapshot.json` and nothing else, so `/app` holds exactly
+    `data models pyproject.toml src` and that command dies with `can't open
+    file` -- which reads as "this is broken", not "here is the right way".
+
+    The check is structural rather than a substring: every file the advice names
+    is resolved against the image's own contents, read out of the Dockerfile, so
+    naming any path the image lacks fails here.
+    """
+    assert "scripts" not in IMAGE_TOP_LEVEL, (
+        "the image now copies scripts/, so the advice it rejected may be the right "
+        "advice again; re-read it rather than trusting this test"
+    )
+    config = _seed_config()
+    _write(2020, 1)
+
+    reason = startup_seed.plan_seed(config, cache, env=ENV).reason
+    assert "backfill_team_stats.py" not in reason, (
+        f"the advice names the checkout's backfill script again:\n{reason}"
+    )
+
+    # The command itself -- what an operator would paste -- and only that. The
+    # surrounding prose is allowed to mention things that are *not* in the image
+    # (the host's `.env`, and the fact that scripts/ is absent), because those
+    # are statements about absence, not instructions. Scoping the check to the
+    # command keeps it from needing a carve-out for each such mention, which is
+    # how a structural check quietly turns into a substring match.
+    advised = reason.split("run: ", 1)[1].split(" (", 1)[0]
+    assert advised, reason
+    for name in re.findall(r"[\w./-]*\.(?:py|sh)\b", advised):
+        top = name.strip("./").split("/")[0]
+        assert top in IMAGE_TOP_LEVEL, (
+            f"the suggested command runs {name!r}, and {top!r}/ is not in the image "
+            f"(the image has {sorted(IMAGE_TOP_LEVEL)}), so it cannot be run from "
+            f"inside the container. Suggested: {advised}"
+        )
+
+
+def test_the_partial_cache_advice_names_the_compose_exec_form_and_the_env_trap(cache):
+    """The lever, in the only form that reaches the container.
+
+    `CFB_SEED_RESUME_PARTIAL` has to arrive via `docker compose exec -e`. Compose
+    hands a variable to a container only when the service's `environment:` block
+    names it, and the `cfb` service's block lists no `CFB_SEED_*`, so the stack's
+    `.env` is consumed by compose's own interpolation and never reaches the
+    process. An operator who sets it there, restarts, and sees `action=skip` will
+    conclude the lever is broken; it was never delivered.
+
+    This seeder cannot detect that -- it reads `os.environ`, and the variable is
+    not in it -- so the warning has to be in the message, where it can be acted
+    on. Hence an assertion on the wording, not on a code path.
+    """
+    config = _seed_config()
+    _write(2020, 1)
+
+    reason = startup_seed.plan_seed(config, cache, env=ENV).reason
+
+    assert (
+        "docker compose exec -e CFB_SEED_RESUME_PARTIAL=true cfb "
+        "python -m cfb_predictor.startup_seed" in reason
+    ), reason
+    assert "-e injects" in reason, (
+        "the advice does not say that -e is what delivers the variable, which is the "
+        f"part that is not obvious:\n{reason}"
+    )
+    assert ".env does nothing" in reason, (
+        f"the advice does not warn that the .env file is inert here, so an operator "
+        f"who has already set it will still believe the lever is broken:\n{reason}"
+    )
+
+
+def test_a_variable_that_is_set_but_blank_is_refused_rather_than_defaulted(cache):
+    """Blank is not unset, and treating it as unset is a bill.
+
+    `CFB_SEED_WEEKS=""` used to read as "not set" and fall back to `1-16` -- 352
+    metered calls, for a variable the operator had explicitly set, and set to the
+    value that most plainly means "nothing". Compose makes blank the common case
+    rather than the exotic one: `CFOO: ${CFOO:-}` resolves to an empty string,
+    not to "unset", so every such variable arrives blank.
+
+    The safe direction is the one that costs nothing, so a blank must *disable*
+    seeding and name itself -- never widen the scope.
+    """
+    for env, named in [
+        ({"CFB_SEED_WEEKS": ""}, "CFB_SEED_WEEKS"),
+        ({"CFB_SEED_WEEKS": "   "}, "CFB_SEED_WEEKS"),
+        ({"CFB_SEED_FROM_YEAR": ""}, "CFB_SEED_FROM_YEAR"),
+        ({"CFB_SEED_TO_YEAR": " "}, "CFB_SEED_TO_YEAR"),
+        ({"CFB_SEED_TEAM_STATS": ""}, "CFB_SEED_TEAM_STATS"),
+        ({"CFB_SEED_RESUME_PARTIAL": ""}, "CFB_SEED_RESUME_PARTIAL"),
+    ]:
+        config = _config(**env)
+        assert not config.enabled, (env, config)
+        assert config.error and named in config.error, (env, config.error)
+
+        calls = []
+        result = run_startup_seed(config, cache, executor=calls.append, env=ENV)
+        assert result.outcome is Outcome.BLOCKED, env
+        assert calls == [], env
+
+    # And the scope it refuses to invent is the default one -- so nothing is
+    # narrowed silently, and nothing is billed either.
+    assert _config(CFB_SEED_WEEKS="  ").error is not None
+
+
+def test_a_blank_master_switch_reads_as_blocked_not_as_on(cache, capsys):
+    """The other direction of the same bug, pinned on the line.
+
+    A blanked-out `CFB_SEED_TEAM_STATS` used to read as *on*, which is the same
+    silent bill as a blanked `CFB_SEED_WEEKS` and just as invisible.
+    """
+    startup_seed.main(
+        ["--check"], config=_config(CFB_SEED_TEAM_STATS=""), cache_dir=cache, env=ENV
+    )
+
+    out = capsys.readouterr().out
+    assert "outcome=blocked" in out, (
+        f"a blank master switch was read as enabled:\n{out}"
+    )
+    assert "CFB_SEED_TEAM_STATS" in out, out
+
+
+def test_a_variable_set_while_seeding_is_off_is_reported_as_ignored(cache, capsys):
+    """A set variable that has no effect says so, by name.
+
+    The one version of "set but ignored" this process can actually see. The other
+    -- compose never forwarding it -- is invisible from in here by construction,
+    because it is not in `os.environ`, and is handled by wording the advice
+    instead. Pretending to cover both would be worse than covering one honestly.
+    """
+    env = {
+        "CFBD_API_KEY": KEY,
+        "CFB_SEED_TEAM_STATS": "false",
+        "CFB_SEED_WEEKS": "1-2",
+        "CFB_SEED_FROM_YEAR": "2019",
+    }
+
+    startup_seed.main(["--check"], cache_dir=cache, env=env)
+
+    out = capsys.readouterr().out
+    assert "ignored" in out, out
+    for named in ("CFB_SEED_WEEKS", "CFB_SEED_FROM_YEAR"):
+        assert named in out, (
+            f"{named} is set and has no effect, and the line does not say so:\n{out}"
+        )
+    assert "CFB_SEED_RESUME_PARTIAL" not in out, (
+        f"the line names a variable that is not set, which is a different kind of lie:\n{out}"
+    )
+
+
+def test_a_check_says_it_fetched_nothing_rather_than_inheriting_the_plan(cache, capsys):
+    """`--check` has no run to report, so it must not borrow the plan's rationale.
+
+    A check that *would* seed renders `outcome=blocked`, and the plan's reason
+    for that is "the cache is empty, so this boot would fetch the whole scope" --
+    a description of something that is not happening, printed under the outcome's
+    name. The one caller that did not act has to say *that* instead.
+    """
+    startup_seed.main(["--check"], config=_seed_config(), cache_dir=cache, env=ENV)
+
+    out = capsys.readouterr().out
+    assert "outcome=blocked" in out, out
+    assert "--check" in out, (
+        f"the line does not say that this was a check, so an operator cannot tell "
+        f"that nothing was billed:\n{out}"
+    )
+    assert "would seed 2 season-week(s)" in out, (
+        f"the check should still say what it *would* have done, since that is what "
+        f"the operator is deciding about:\n{out}"
+    )
 
 
 # ---------------------------------------------------------------- wiring

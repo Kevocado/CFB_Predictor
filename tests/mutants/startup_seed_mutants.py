@@ -11,6 +11,22 @@ A mutant that changes the file and leaves the suite green is a HOLE in the test.
 
 Nothing here reaches the network. tests/test_startup_seed.py carries a tripwire
 that fails loudly if any mutant manages to call `fetch_team_stats`.
+
+**The 11 mutants added for the 2026-09-28 production defects, and what they
+settled.** The brief for that work asked for "an inverted boolean or a mis-ordered
+conditional" behind the line reading `action=seed outcome=failed`. There is
+neither: `run_startup_seed` assigns `Outcome.SEEDED` on the success path and
+`Outcome.FAILED` only inside `except Exception`, and
+`test_a_successful_seed_says_seeded_and_never_says_failed` passes against
+origin/main's source unmodified. So that first mutant is a *guard* rather than a
+reproduction, and it is kept precisely so the next four -- the real defects -- can
+be read against a control that is known to hold.
+
+The real defects were all in how a run is *described*, not in how it is decided:
+the error lived only in a `logger.info` that nothing configures, `reason=` carried
+the plan's rationale instead of the outcome's, a partial write was not re-counted,
+and the advice named `scripts/backfill_team_stats.py`, which is not in the image.
+Each has a mutant here, and each is caught.
 """
 
 from __future__ import annotations
@@ -144,6 +160,79 @@ MUTANTS: list[tuple[str, str, str | None, str]] = [
         "dockerfile",
         "; exec uvicorn",
         "; uvicorn",
+    ),
+    # --- the 2026-09-28 production defects -------------------------------
+    # The first is the one the brief called "an inverted boolean". There is
+    # none: a successful seed already rendered `outcome=seeded`, and
+    # `test_a_successful_seed_says_seeded_and_never_says_failed` passes against
+    # origin/main's source. It is here as a *guard* on that, and it is the
+    # control for the next four: they are the real defects, and each one turns a
+    # green seed into a line an operator cannot act on.
+    (
+        "a successful seed reports outcome=failed (guard)",
+        "src",
+        "        outcome, error = Outcome.SEEDED, None",
+        "        outcome, error = Outcome.FAILED, None",
+    ),
+    (
+        "the status line drops the error again",
+        "src",
+        "        if self.error:\n            fields.append(f\"error={self.error}\")",
+        "        if False:\n            fields.append(f\"error={self.error}\")",
+    ),
+    (
+        "reason= goes back to explaining the outcome with the plan",
+        "src",
+        "        if self.outcome is Outcome.SEEDED:",
+        "        if self.reason is None:\n            return self.plan.reason\n        if self.outcome is Outcome.SEEDED:",
+    ),
+    (
+        "a failure is described as a success",
+        "src",
+        "                f\"the backfill raised, so the {self.plan.estimated_calls} season-week(s) in \"",
+        "                f\"the backfill completed, so the {self.plan.estimated_calls} season-week(s) in \"",
+    ),
+    (
+        "the run is not re-counted, so a partial write is invisible",
+        "src",
+        "    cached_after, unreadable_after = _recount(config, cache_dir)",
+        "    cached_after, unreadable_after = plan.cached_pairs, plan.unreadable_pairs",
+    ),
+    (
+        "plan_reason= is printed even when nothing was attempted",
+        "src",
+        "        if attempted:\n            fields.append(f\"plan_reason={self.plan.reason}\")",
+        "        fields.append(f\"plan_reason={self.plan.reason}\")",
+    ),
+    (
+        "the advice names a path that is not in the image",
+        "src",
+        "                \"docker compose exec -e CFB_SEED_RESUME_PARTIAL=true cfb \"",
+        "                \"scripts/backfill_team_stats.py --execute \"",
+    ),
+    (
+        "the .env trap is not mentioned (the lever looks broken again)",
+        "src",
+        "                \"CFB_SEED_RESUME_PARTIAL in the stack's .env does nothing, because the cfb \"",
+        "                \"CFB_SEED_RESUME_PARTIAL in the stack's .env is all that is needed, because the cfb \"",
+    ),
+    (
+        "a blank variable falls back to its default (a silent 352-call bill)",
+        "src",
+        "    if raw is None:\n        return DEFAULT_WEEKS",
+        "    if raw is None or not raw.strip():\n        return DEFAULT_WEEKS",
+    ),
+    (
+        "a variable set while seeding is off is silently ignored",
+        "src",
+        "        ignored = _ignored_by_disabled_seeding(env)",
+        "        ignored = []",
+    ),
+    (
+        "--check flattens a blocked scope back to skipped",
+        "src",
+        "            outcome=Outcome.BLOCKED if plan.should_seed else plan.outcome,",
+        "            outcome=Outcome.SKIPPED if not plan.should_seed else Outcome.BLOCKED,",
     ),
 ]
 
