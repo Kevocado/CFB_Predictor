@@ -186,11 +186,15 @@ def test_calibration_uses_only_pregame_resolved_rows():
 
     calibration = store.get_calibration()
 
-    bucket = next(b for b in calibration["winner"] if b["lo"] == 0.6)
-    assert bucket == {"lo": 0.6, "hi": 0.7, "n": 4, "mean_prob": pytest.approx(0.65), "hit_rate": 0.75}
-    assert len(calibration["winner"]) == 10
-    empty = next(b for b in calibration["winner"] if b["lo"] == 0.1)
-    assert empty == {"lo": 0.1, "hi": 0.2, "n": 0, "mean_prob": None, "hit_rate": None}
+    # Four buckets since 2026-09-27, so a 0.65 prediction lands in 0.5-0.75 rather than 0.6-0.7.
+    # The count is the hub's gate arithmetic: it needs every bucket to hold calibration_min_n before
+    # it admits anything, so n_buckets x min_n must stay under the reviewer's 100. At 10 x 20 that
+    # was 200, twice the reviewer's bar.
+    bucket = next(b for b in calibration["winner"] if b["lo"] == 0.5)
+    assert bucket == {"lo": 0.5, "hi": 0.75, "n": 4, "mean_prob": pytest.approx(0.65), "hit_rate": 0.75}
+    assert len(calibration["winner"]) == store.CALIBRATION_N_BUCKETS == 4
+    empty = next(b for b in calibration["winner"] if b["lo"] == 0.0)
+    assert empty == {"lo": 0.0, "hi": 0.25, "n": 0, "mean_prob": None, "hit_rate": None}
 
 
 def test_calibration_grades_spread_and_total_against_recorded_lines():
@@ -200,8 +204,9 @@ def test_calibration_grades_spread_and_total_against_recorded_lines():
 
     calibration = store.get_calibration()
 
+    # 0.55 lands in 0.5-0.75 and 0.35 in 0.25-0.5 under four buckets.
     spread = next(b for b in calibration["spread"] if b["lo"] == 0.5)
-    total = next(b for b in calibration["total"] if b["lo"] == 0.3)
+    total = next(b for b in calibration["total"] if b["lo"] == 0.25)
     assert (spread["n"], spread["hit_rate"]) == (1, 1.0)   # margin 7 > 3
     assert (total["n"], total["hit_rate"]) == (1, 1.0)     # 47 > 40
 
@@ -220,3 +225,38 @@ def test_the_track_record_keeps_reporting_the_rebuilt_count():
     assert games["n_rebuilt"] == 1, games
     assert games["n_resolved"] == 1, games          # only the tracked one
     assert "n_backfilled" not in games
+
+
+def test_the_bucket_count_keeps_the_hub_gate_under_the_reviewers_bar():
+    """The reason this number is 4 and not 10, asserted so a future edit has to confront it.
+
+    The trade hub gates an edge on `n >= calibration_min_n` in the bucket the edge's own
+    probability falls in, and it needs EVERY bucket to clear that bar before it admits anything. So
+    the settled contracts needed are `n_buckets x calibration_min_n`, and that has to stay under the
+    hub reviewer's own `MIN_SETTLED` of 100 -- otherwise the product is stricter about admitting an
+    edge than it is about judging one.
+
+    At 10 x 20 that was 200. On the real distribution (42 settled for CFB winner) it admitted nothing
+    at all at 100 settled. At 4 x 20 it is 80.
+    """
+    hub_calibration_min_n = 20    # tradehub/config/engines.yaml, both sports engines
+    hub_reviewer_min_settled = 100  # tradehub/sports/scorecard.py: MIN_SETTLED
+
+    required = store.CALIBRATION_N_BUCKETS * hub_calibration_min_n
+
+    assert required <= hub_reviewer_min_settled, (
+        f"{store.CALIBRATION_N_BUCKETS} buckets x min_n {hub_calibration_min_n} = {required} settled "
+        f"to open the hub's gate, which is above the reviewer's {hub_reviewer_min_settled}."
+    )
+    assert required == 80
+
+
+def test_a_caller_can_still_ask_for_a_finer_view():
+    """The count stays a parameter, so a finer analysis does not require changing the default the
+    hub's gate depends on. Identical to NFL_Predictor -- the two feeds must publish the same layout
+    or the hub's gate arithmetic would differ by sport."""
+    fine = store.get_calibration(n_buckets=20)
+
+    assert fine["n_buckets"] == 20
+    assert len(fine["winner"]) == 20
+    assert store.get_calibration()["n_buckets"] == store.CALIBRATION_N_BUCKETS

@@ -41,7 +41,9 @@ def test_kalshi_feed_is_empty_but_valid_with_no_snapshots(client):
     body = client.get("/api/kalshi-feed").json()
 
     assert body["games"] == []
-    assert body["calibration"]["winner"][0] == {"lo": 0.0, "hi": 0.1, "n": 0, "mean_prob": None, "hit_rate": None}
+    # Four buckets since 2026-09-27; the first is 0.0-0.25, not 0.0-0.1. See
+    # store.CALIBRATION_N_BUCKETS for why the hub's gate arithmetic sets this number.
+    assert body["calibration"]["winner"][0] == {"lo": 0.0, "hi": 0.25, "n": 0, "mean_prob": None, "hit_rate": None}
 
 
 def test_kalshi_feed_touches_neither_games_data_nor_models_nor_the_network(client, monkeypatch):

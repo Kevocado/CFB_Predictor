@@ -404,7 +404,23 @@ def _calibration_buckets(pairs: list[tuple[float, int]], n_buckets: int) -> list
     return buckets
 
 
-def get_calibration(n_buckets: int = 10) -> dict:
+# 4 buckets, not 10, ruled 2026-09-27. Same change, same reasoning, and the same commit shape as
+# NFL_Predictor -- the two feeds must publish the same bucket layout or the hub's gate arithmetic
+# differs by sport, which would be worse than either value on its own.
+#
+# The trade hub gates an edge on `n >= calibration_min_n` in the bucket the edge's own probability
+# falls in, and it needs EVERY bucket to clear that bar before admitting anything. So the settled
+# contracts needed are `n_buckets x calibration_min_n`: at 10 x 20 that is 200, while the hub's
+# reviewer renders a verdict at 100. The product was twice as strict about admitting an edge as it
+# was about judging one, and on the real distribution (42 settled for CFB winner) the winner gate
+# admitted nothing at all at 100 settled.
+#
+# At 4 x 20 that is 80, under the reviewer's bar, and the same measurement shows 4 buckets admitting
+# 95% / 82% / 97% of edge mass at 100 settled where 10 admitted 0% / 46% / 66%.
+CALIBRATION_N_BUCKETS = 4
+
+
+def get_calibration(n_buckets: int = CALIBRATION_N_BUCKETS) -> dict:
     """Reliability buckets over resolved, genuinely pre-game snapshots: home win probability vs
     home won, home cover probability vs covered (at the recorded line), over probability vs went
     over. Ties and pushes are left out.
