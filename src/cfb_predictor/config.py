@@ -17,6 +17,7 @@ PUBLIC_MODE = os.getenv("PUBLIC_MODE", "false").lower() == "true"
 
 GAMES_CACHE_DIR = CACHE_DIR / "games"
 TEAMS_CACHE_DIR = CACHE_DIR / "teams"
+TEAM_STATS_CACHE_DIR = CACHE_DIR / "team_stats"
 PLAYER_STATS_CACHE_DIR = CACHE_DIR / "player_stats"
 ODDS_CACHE_DIR = CACHE_DIR / "odds"
 ROSTER_CACHE_DIR = CACHE_DIR / "rosters"

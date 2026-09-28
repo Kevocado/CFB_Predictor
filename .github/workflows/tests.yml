@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    # `pip install -e .` silently no-ops the editable install on some runners
+    # here, so every job exports PYTHONPATH instead of relying on it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" || pip install -e . pytest pytest-mock ruff
+
+      - name: Offline tests
+        # Network-marked tests are deselected: they hit live upstream APIs and
+        # would make CI depend on nflverse/CFBD being up and on metered quota.
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: pytest tests/ -q -m "not network"
+
+      - name: Network tests (live upstreams)
+        # Informational, not gating. A failure here usually means a schema change
+        # upstream, which is worth seeing but should not block a source PR.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: pytest tests/ -q -m network
+
+      - name: Lint
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          ruff check src tests --select E9,F63,F7,F82 || \
+            (echo "::error::ruff found blocking errors"; exit 1)
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build

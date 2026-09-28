@@ -323,3 +323,131 @@ def test_track_record_leaves_rebuilt_picks_out_of_every_rate():
 def test_an_unreadable_snapshot_time_counts_as_rebuilt():
     """When the timing can't be proven, the honest default is 'rebuilt'."""
     assert store._snapshotted_after_kickoff("not a time", "2025-09-07T17:00:00+00:00") is True
+
+
+# --- a missing probability must not become a recorded verdict ------------------
+#
+# The recurring defect in this repo, and it appears here in its worst form because
+# the output is the *track record* -- the page a reader uses to judge the model.
+#
+# `_compute_hits` guards on the LINE being present and then does
+#
+#     predicted_home_cover = (home_cover_prob or 0) >= (away_cover_prob or 0)
+#
+# The probabilities are never checked. So a game snapshotted with a spread but no
+# cover probabilities -- which is what the odds feed produces whenever it has a
+# spread but not a matching market -- is graded as though the model had called
+# `0.0 >= 0.0`, i.e. home cover. Demonstrated both ways:
+#
+#     home 31-24, spread -3.5, cover probs None  -> ats_hit = 1  (fabricated HIT)
+#     home 20-24, spread -3.5, cover probs None  -> ats_hit = 0  (fabricated MISS)
+#
+# Both are a claim about a prediction the model never made, and both are persisted.
+# The existing `..._null_when_lines_were_never_recorded` test covers the opposite
+# gap -- line missing, probabilities present -- which is why the suite was green.
+
+def test_reconcile_leaves_ats_null_when_the_line_is_present_but_the_cover_probabilities_are_not():
+    store.record_game_predictions([_future_game(
+        home_spread_line=-3.5, home_cover_prob=None, away_cover_prob=None,
+    )])
+    results = pd.DataFrame([{"game_id": "g1", "home_score": 31, "away_score": 24}])
+
+    store.reconcile_game_predictions(results)
+
+    with contextlib.closing(store._connect()) as conn:
+        row = pd.read_sql("SELECT * FROM game_predictions WHERE game_id = 'g1'", conn).iloc[0]
+
+    # home did cover, so a fabricated call would read as ats_hit == 1. There was no
+    # call to grade, so the honest answer is no grade.
+    assert pd.isna(row["ats_hit"]), (
+        f"a missing cover probability must not be recorded as a verdict, got {row['ats_hit']}"
+    )
+    assert row["moneyline_hit"] == 1, "the moneyline call was real and is still gradable"
+
+
+def test_reconcile_leaves_total_null_when_the_line_is_present_but_the_total_probabilities_are_not():
+    store.record_game_predictions([_future_game(
+        total_line=51.5, over_prob=None, under_prob=None,
+    )])
+    results = pd.DataFrame([{"game_id": "g1", "home_score": 31, "away_score": 24}])
+
+    store.reconcile_game_predictions(results)
+
+    with contextlib.closing(store._connect()) as conn:
+        row = pd.read_sql("SELECT * FROM game_predictions WHERE game_id = 'g1'", conn).iloc[0]
+
+    assert pd.isna(row["total_hit"]), (
+        f"a missing over/under probability must not be recorded as a verdict, got {row['total_hit']}"
+    )
+    assert row["ats_hit"] == 1, "the ATS call was real (probs present) and is unaffected"
+
+
+def test_reconcile_does_not_grade_a_one_sided_market():
+    """Only one of the pair present is not a usable market either.
+
+    `home_cover_prob=0.6, away_cover_prob=None` is a half-populated market. It is
+    not obviously home-cover, but it is not a graded call either, and the old
+    expression turns it into a confident `0.6 >= 0` -> home cover.
+    """
+    store.record_game_predictions([_future_game(
+        home_spread_line=-3.5, home_cover_prob=0.6, away_cover_prob=None,
+    )])
+    results = pd.DataFrame([{"game_id": "g1", "home_score": 31, "away_score": 24}])
+
+    store.reconcile_game_predictions(results)
+
+    with contextlib.closing(store._connect()) as conn:
+        row = pd.read_sql("SELECT * FROM game_predictions WHERE game_id = 'g1'", conn).iloc[0]
+
+    assert pd.isna(row["ats_hit"])
+
+
+def test_get_game_verdict_does_not_re_derive_a_prediction_from_missing_probabilities():
+    """The read path, for a row an older build already wrote.
+
+    `_compute_hits` no longer grades a market whose probabilities are missing, so
+    new rows never reach this state. But the deployed database *already contains*
+    them: every game snapshot by the old code with a spread line and no cover
+    probabilities was written with a fabricated `ats_hit`, and those rows are
+    permanent unless something backfills them.
+
+    So `get_game_verdict` must refuse to re-derive a `predicted` side from a null
+    probability. It used to compute `(None or 0) >= (None or 0)` -> `True` ->
+    `"home_cover"`, which put a fabricated prediction next to a stored hit flag
+    that the same function then reported as fact. `hit` is stored, `predicted` is
+    recomputed, and a disagreement between them is a silent contradiction inside
+    one verdict object.
+    """
+    store.record_game_predictions([_future_game(
+        home_spread_line=-3.5, home_cover_prob=None, away_cover_prob=None,
+    )])
+    # Simulate the row the old build wrote: graded anyway, probabilities still null.
+    with contextlib.closing(store._connect()) as conn, conn:
+        conn.execute(
+            "UPDATE game_predictions SET resolved = 1, ats_hit = 1, moneyline_hit = 1, "
+            "actual_home_score = 30, actual_away_score = 20 WHERE game_id = 'g1'"
+        )
+
+    verdict = store.get_game_verdict("g1")
+
+    assert verdict is not None
+    assert verdict["ats"] is None, (
+        f"a null-probability row must not report a predicted side, got {verdict['ats']}"
+    )
+    # The market summary is dropped, not invented -- but the real facts survive.
+    assert verdict["moneyline"]["hit"] is True
+    assert verdict["actual_home_score"] == 30
+    assert verdict["home_spread_line"] == -3.5
+
+
+def test_get_game_verdict_keeps_reconciling_markets_when_probabilities_are_present():
+    """The guard must not swallow a genuinely graded market."""
+    store.record_game_predictions([_future_game()])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 30, "away_score": 20}]))
+
+    verdict = store.get_game_verdict("g1")
+
+    assert verdict["ats"] is not None
+    assert verdict["ats"]["predicted"] == "home_cover"
+    assert verdict["ats"]["hit"] is True
+    assert verdict["totals"] is not None
