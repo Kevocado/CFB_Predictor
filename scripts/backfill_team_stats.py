@@ -10,7 +10,7 @@ requires an explicit flag puts the cost behind a deliberate act instead of a URL
 Usage
 -----
     python scripts/backfill_team_stats.py                      # dry run, costs nothing
-    python scripts/backfill_team_stats.py --execute           # 2004-2025, ~330 calls
+    python scripts/backfill_team_stats.py --execute           # 2004-2025, 352 calls
     python scripts/backfill_team_stats.py --execute --to-year 2010
     python scripts/backfill_team_stats.py --execute --season 2023 --weeks 1
 
@@ -22,6 +22,17 @@ is therefore cheap and is the correct response to an interruption -- but only
 because empty weeks are tombstoned. Without that, every re-run re-requests every
 dead week in range (most seasons end before week 15; 2023 has no week 16 at all),
 so "just run it again" would cost a few dozen extra calls each time.
+
+Where this runs in production
+-----------------------------
+**Nowhere, by default, and that is on purpose.** `data/cache/` is gitignored and
+also in `.dockerignore`, so this script's output never reaches a container. The
+production seed is done in-process by `python -m cfb_predictor.startup_seed`
+(from the Dockerfile's `CMD`), which calls the same `fetch_team_stats` this
+script does and is stopped by the same missing-key rule. Use this script to seed
+a developer's checkout, or to repair a *partial* container cache -- which the
+boot task deliberately declines to re-bill unattended. See `data/team_stats.py`'s
+module docstring for what production does and does not have.
 """
 
 from __future__ import annotations

@@ -290,7 +290,7 @@ def test_the_default_scope_costs_what_the_plan_says_it_costs(cache):
     config = _config()
     plan = startup_seed.plan_seed(config, cache)
 
-    assert config.seasons == [2004, 2025]
+    assert (config.seasons[0], config.seasons[-1]) == (2004, 2025)
     assert len(config.seasons) == 22
     assert plan.total_pairs == 352
     assert plan.estimated_calls == 352
@@ -396,7 +396,7 @@ def test_the_entrypoint_exits_zero_even_when_seeding_fails(cache, capsys):
         raise RuntimeError("cfbd is unreachable")
 
     code = startup_seed.main(
-        ["--execute"], config=_seed_config(), cache_dir=cache, executor=boom,
+        [], config=_seed_config(), cache_dir=cache, executor=boom,
         env={"CFBD_API_KEY": KEY},
     )
 
@@ -428,11 +428,10 @@ def test_the_cache_path_convention_matches_the_fetcher_it_decides_for(tmp_path):
     pinned against the real one rather than trusted.
     """
     for season, week in [(2004, 1), (2025, 9), (2025, 16)]:
-        assert startup_seed.cache_path(tmp_path, season, week) == team_stats._week_cache_path(
-            season, week
-        ).name and startup_seed.cache_path(
-            tmp_path, season, week
-        ).name == f"{season}_wk{week:02d}.parquet"
+        ours = startup_seed.cache_path(tmp_path, season, week)
+        theirs = team_stats._week_cache_path(season, week)
+        assert ours.name == theirs.name, (ours, theirs)
+        assert ours.name == f"{season}_wk{week:02d}.parquet"
 
 
 def test_the_real_executor_refuses_without_a_key_and_never_touches_the_fetcher(
@@ -453,6 +452,27 @@ def test_the_real_executor_refuses_without_a_key_and_never_touches_the_fetcher(
 
     with pytest.raises(RuntimeError, match="CFBD_API_KEY"):
         startup_seed.execute_backfill(plan, env={})
+
+
+def test_the_module_says_where_the_backfill_actually_lives():
+    """The claim that caused this, pinned where it was being made.
+
+    The 42,190-row figure lived in `data/team_stats.py`'s docstring with nothing
+    saying the data behind it was on one laptop. Docstrings rot silently -- there is
+    no test failure when a deployment path changes underneath one -- so the
+    correction is asserted here rather than trusted. Deliberately loose: it looks for
+    the substance (gitignored, not in the image, seeded at boot) and not for the
+    phrasing, so a rewording does not fail the suite.
+    """
+    from cfb_predictor.data import team_stats
+
+    doc = team_stats.__doc__ or ""
+    assert "not in production" in doc, (
+        "team_stats.py's docstring quotes a 42,190-row backfill that is not in "
+        "production; the correction that says so has gone missing"
+    )
+    for token in ("gitignored", ".dockerignore", "startup_seed", "CFBD_API_KEY"):
+        assert token in doc, f"team_stats.py's docstring no longer mentions {token!r}"
 
 
 def test_the_container_starts_through_the_seeder():

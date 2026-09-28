@@ -33,6 +33,44 @@ Reconciliation constraint. Because both sides come from the same game payload,
 **not exactly, and not to a bounded error**. Measured 2026-09-28 over the full
 2004-2025 backfill -- 42,190 team-games, 42,172 with a comparable player sum:
 
+**Where that backfill lives: not in production, and until 2026-09-28 not on any
+container either.** Read this before quoting any figure below as a description of
+the deployed service. `data/cache/` is gitignored *and* listed in
+`.dockerignore`, and the Dockerfile `mkdir`s the cache directories empty, so the
+image ships no team-stats cache and every cold start began with none. Those
+42,190 rows came from one developer's local `data/cache/team_stats/` -- 352
+files, 8.0MB, 2004-2025 complete, verified 2026-09-28 -- and were never
+committed, so they never reached a container. The measurements below are real
+measurements of real data; the data itself is not a property of the deployment.
+
+A fresh container now seeds it itself: `python -m cfb_predictor.startup_seed`
+runs from the Dockerfile's `CMD` ahead of uvicorn, and is a no-op from the second
+boot on (it reads the cache with the fetcher's own staleness gate, so "already
+seeded" and "the fetcher would re-request this" are the same statement). **It is
+also a no-op until `CFBD_API_KEY` reaches the container's environment**, in which
+case it logs `cache=empty outcome=blocked` and fetches nothing. As of this
+commit `deploy.yml`'s Azure job passes only `ODDS_API_KEY` and
+`SPORTSBOOK_API_KEY`, and the VPS stack is configured outside this repository, so
+a deployment launched today still comes up with an empty team-stats cache and says
+so in its own logs. Check it for real with
+`python -m cfb_predictor.startup_seed --check`, which costs nothing. Do not
+assume the figures below describe what is running: they describe what this code
+computes *when the cache is populated*, which is now a question about a running
+container's cache directory rather than about this repository.
+
+**The full sweep costs 352 calls, not the "~330" quoted just above.** 22 x 16,
+one call per (season, week) = 352 -- and the local backfill wrote exactly 352
+files, so 352 is the enumeration rather than an estimate. The "~330" in the
+paragraph above and in `fetch_team_stats`'s docstring understates a fixed count
+and is simply wrong; it is left in place only because the surrounding text is a
+dated historical note, and `tests/test_startup_seed.py` pins the real number.
+
+(A caution for whoever edits next: the test that checks the table below locates
+it by searching this docstring top-down for its first header cell, so prose
+*above* the table must not quote that header's wording. An earlier draft of this
+paragraph did, and it silently moved the table's header index, after which the
+test read the `exact (diff == 0)` row's own label as if it were the number.)
+
 **Which population this is.** The 22-season column is the frame **before**
 `attach_schedule_weeks` -- the population `reconcile_against_players` is actually given when
 the join key is `game_id`, since the week is not consulted. On the *attach* path the same
@@ -356,8 +394,11 @@ def fetch_team_stats(
     default to 1-16. Cache is per (season, week) because a season's team
     yardage never changes once played.
 
-    **Cost warning:** a full 2004-2025 backfill is ~330 calls against a metered
-    budget. Call this once, deliberately; never put it on a schedule.
+    **Cost warning:** a full 2004-2025 backfill is 22 x 16 = **352** calls against
+    a metered budget. (This docstring said "~330"; that understated a fixed
+    enumeration and was wrong.) Call this once, deliberately; never put it on a
+    schedule. `startup_seed.py` is the one unattended caller, and it only ever
+    runs when the cache is empty, once, and never without `CFBD_API_KEY`.
     """
     import cfbd
 
