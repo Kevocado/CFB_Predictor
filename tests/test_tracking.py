@@ -727,3 +727,123 @@ def test_prop_track_record_fails_closed_when_the_kickoff_time_cannot_be_read():
     assert props["n_rebuilt"] == 2, (
         "a prop row that cannot be proven pre-kickoff was counted as a pick"
     )
+
+
+# --- is the READ-side guard sufficient on its own? ------------------------------
+#
+# NFL's PR #21 guarded two sites: `_summarize_player_props` and
+# `reconcile_player_prop_predictions`. Only the first is ported here, and the
+# honest reason is not "out of scope" -- it is that the second cannot reach the
+# published record. These two tests are the proof, so that reason is checked
+# rather than assumed.
+#
+# The invariant, stated exactly:
+#
+#   Every row that reaches `n_resolved`, `hit_rate_when_called` or `brier_score`
+#   passes through the `_snapshotted_after_kickoff` guard, regardless of how it
+#   entered the table.
+#
+# It holds for two structural reasons, and each has a test below.
+#
+# 1. The write path admits post-kickoff rows -- it does NOT have to refuse them
+#    for the record to stay honest. `record_player_prop_predictions` (store.py:646)
+#    stamps `snapshotted_at` with `now()` and never compares it to the game's
+#    kickoff, and `reconcile_player_prop_predictions` (store.py:695) grades any
+#    row that joins to stats. Both are demonstrated below.
+#
+# 2. Neither of them can REWRITE that stamp. `reconcile_player_prop_predictions`
+#    is an `UPDATE ... SET resolved = 1, actual_value = ?` -- it does not mention
+#    `snapshotted_at`, and no other write against the table exists. So the guard
+#    reads the row's original provenance however the row arrived, and
+#    `_summarize_player_props` (the only summariser; sole caller
+#    `store.py:342`) applies it to the entire `resolved = 1` set.
+#
+# If (1) or (2) ever changed, the published numbers would go wrong again and these
+# tests would fail. That is the point of writing them.
+
+
+def test_rows_the_write_path_admits_after_kickoff_never_reach_the_published_record():
+    """Proves (1): the guard keys on PROVENANCE, not on whether the writer was careful.
+
+    This drives the real public writers -- `record_player_prop_predictions` and
+    `reconcile_player_prop_predictions` -- so the rows are admitted and graded the
+    same way production admits them, not hand-planted to suit the summariser. Both
+    writers are demonstrably unguarded: the insert stamps `now()` and never looks at
+    the kickoff, and the reconcile grades anything that joins to stats. The game
+    kicked off in 2000, so `now()` is unambiguously after it.
+
+    The published record must still be empty. If it is not, the read-side guard is
+    not sufficient and the reconcile guard has to be ported after all.
+    """
+    _insert_game_row("g_done", "2000-09-04T20:20:00+00:00")
+
+    admitted = store.record_player_prop_predictions([
+        _prop(game_id="g_done", player_id="late_td", market="anytime_td", predicted_value=0.99),
+        _prop(game_id="g_done", player_id="late_yds", market="rushing_yards", predicted_value=999.0),
+    ])
+    graded = store.reconcile_player_prop_predictions(pd.DataFrame([
+        # The anytime_td row is graded as a MISS, so if it leaked in the published
+        # hit rate would fall from None to 0.0 rather than merely changing a count.
+        {"game_id": "g_done", "player_id": "late_td",
+         "rushing_tds": 0, "receiving_tds": 0, "passing_tds": 0},
+        {"game_id": "g_done", "player_id": "late_yds", "rushing_yards": 5},
+    ]))
+    # Both writers really did admit and grade post-kickoff rows. If a future change
+    # makes them refuse, this assert fires and the test below must be re-reasoned --
+    # it would then be guarding nothing.
+    assert admitted == 2
+    assert graded == 2
+
+    props = store.get_track_record()["player_props"]
+
+    assert props["anytime_td"]["n_resolved"] == 0
+    assert props["anytime_td"]["hit_rate_when_called"] is None, (
+        "a graded post-kickoff anytime_td pick reached the published hit rate"
+    )
+    assert props["anytime_td"]["brier_score"] is None, (
+        "a graded post-kickoff anytime_td pick reached the published Brier score"
+    )
+    assert props["rushing_yards"]["n_resolved"] == 0
+    assert props["rushing_yards"]["mean_absolute_error"] is None
+    assert props["n_rebuilt"] == 2, "the write path admitted rows the record did not account for"
+
+
+def test_grading_never_restamps_the_snapshot_timestamp_the_guard_reads():
+    """Proves (2), and it is the load-bearing half.
+
+    The read-side guard decides pre-kickoff-ness from `snapshotted_at`, and the
+    write path cannot correct a bad stamp because it cannot alter one. This is the
+    only reason a late row cannot be relabelled as a pick: the writer stamps
+    `now()`, grading leaves that stamp alone, and the summariser re-reads it every
+    time.
+
+    So the invariant to pin is that grading is provenance-preserving. It asserts no
+    particular metric -- it asserts that the timestamp the guard depends on is
+    byte-identical before and after `reconcile_player_prop_predictions` runs. Add
+    `snapshotted_at = ?` to that UPDATE and this fails, which is exactly the change
+    that would let the write path defeat the read-side guard and silently put
+    look-forward picks back into the published record.
+    """
+    _insert_game_row("g_kept", "2000-09-04T20:20:00+00:00")
+    store.record_player_prop_predictions([
+        _prop(game_id="g_kept", player_id="p1", market="rushing_yards", predicted_value=90.0),
+    ])
+
+    def stamps():
+        with contextlib.closing(store._connect()) as conn:
+            rows = pd.read_sql(
+                "SELECT player_id, snapshotted_at FROM player_prop_predictions ORDER BY player_id", conn
+            )
+        return dict(zip(rows["player_id"], rows["snapshotted_at"]))
+
+    before = stamps()
+    assert store.reconcile_player_prop_predictions(
+        pd.DataFrame([{"game_id": "g_kept", "player_id": "p1", "rushing_yards": 80}])
+    ) == 1
+
+    assert stamps() == before, (
+        "grading rewrote snapshotted_at, so a late row could be relabelled as a "
+        "pick and the read-side guard would stop protecting the published record"
+    )
+    # And the record is still honest for the same reason.
+    assert store.get_track_record()["player_props"]["n_rebuilt"] == 1
