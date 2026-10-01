@@ -688,6 +688,10 @@ def test_the_migration_does_not_change_any_reported_number(tmp_path, capsys):
     change to the read path makes it fail, that is the interesting event: either a reader
     started trusting the stored flag, in which case the migration matters more than this
     test says, or a reader started reporting something new.
+
+    "No reported number" is taken literally: every aggregate is compared, plus the per-game
+    verdicts. `per_pick` is compared separately below, because it is a list of picks rather
+    than a number and it is SUPPOSED to move -- see there.
     """
     db = tmp_path / "tracking.db"
     _mixed_db(db).close()
@@ -699,8 +703,31 @@ def test_the_migration_does_not_change_any_reported_number(tmp_path, capsys):
     assert migration.main(["--db", str(db), "--execute"]) == 0
     capsys.readouterr()
 
-    assert store.get_track_record()["games"] == before_track_record
+    after_track_record = store.get_track_record()["games"]
+
+    numbers = ("n_resolved", "pct_moneyline_correct", "pct_ats_correct", "pct_totals_correct",
+               "weekly_trend", "n_pre_kickoff")
+    assert {key: after_track_record[key] for key in numbers} == {
+        key: before_track_record[key] for key in numbers
+    }
+    assert after_track_record["pre_kickoff"] == before_track_record["pre_kickoff"]
     assert {gid: store.get_game_verdict(gid) for gid in game_ids} == before_verdicts
+
+    # The one surface that moves, checked rather than skipped. The repair nulls the hit flag
+    # on rows whose market was never graded, and `per_pick` omits an ungraded market instead
+    # of publishing it as a fabricated pick -- so exactly the five fabricated markets in
+    # `_mixed_db` leave the list and every other pick stays on it. That is the repair
+    # improving the disclosure, not a reported number moving. Note 2025_06 keeps its `ats`
+    # row, which was genuinely graded, and loses only its fabricated `totals` one.
+    picked = lambda record: {(r["game_id"], r["market"]) for r in record["per_pick"]}
+    assert picked(before_track_record) - picked(after_track_record) == {
+        ("2025_03_fabricated_ats_hit", "ats"),
+        ("2025_04_fabricated_half_market", "ats"),
+        ("2025_05_fabricated_ats_miss", "ats"),
+        ("2025_06_fabricated_total", "totals"),
+        ("2025_07_ats_fabricated_total_genuine", "ats"),
+    }
+    assert picked(after_track_record) - picked(before_track_record) == set()
 
 
 def test_the_migration_still_nulls_the_flags_even_though_no_reported_number_moves(tmp_path):

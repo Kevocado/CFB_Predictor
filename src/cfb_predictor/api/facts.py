@@ -123,11 +123,27 @@ def _players(props: list[dict], teams: set[str]) -> list[dict]:
 
 
 def _record() -> dict | None:
+    """The pre-kickoff record, under a label that says so.
+
+    Since 2026-10-01 the track record's `games` headline counts every recorded pick,
+    including ones the model made after kickoff (`track-record-counts-every-pick`, merged as
+    predictor-hub #66). So this must read the `pre_kickoff` sub-record, not the headline:
+    the number on this block is labelled "Picks made before kickoff", and putting an
+    all-picks figure under that label is precisely the mislabelling the spec still forbids
+    ("nothing computed after the start may be labelled 'made before kickoff'").
+
+    The pre-kickoff subset is what this block showed before the rule changed, so the figures
+    on the page are unchanged. A payload with no `pre_kickoff` at all yields None rather than
+    a mislabelled record -- an omission is recoverable, a wrong label is not.
+    """
     games = (store.get_track_record() or {}).get("games") or {}
-    settled = int(games.get("n_resolved") or 0)
+    before_kickoff = games.get("pre_kickoff")
+    if not isinstance(before_kickoff, dict):
+        return None
+    settled = int(before_kickoff.get("n_resolved") or 0)
     if settled <= 0:
         return None
-    pct = _num(games.get("pct_moneyline_correct"))
+    pct = _num(before_kickoff.get("pct_moneyline_correct"))
     return {
         "label": "Picks made before kickoff",
         "hits": None if pct is None else int(round(pct * settled)),

@@ -45,6 +45,10 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder PYTHONPATH=$PWD/src ... -m 
   always existed and failing closed on an unparseable row, and `/api/track-record` already reports
   `n_rebuilt` from that same predicate. Reusing them means the flag cannot drift out of step with the
   timestamps, and a database written before this change needs no migration pass.
+  - **Superseded 2026-10-01:** `/api/track-record` no longer reports `n_rebuilt`. It counted
+    resolved rows refused as look-forward, and nothing is refused any more -- every recorded
+    pick counts (`n_pre_kickoff` is the pre-kickoff count that replaced it). The derivation
+    itself is unchanged and still live.
 - The feed still emits `"backfilled": false`: for a row that passed the filter that is the honest
   statement, and `tradehub/sports/feed.py::parse_feed` rejects a truthy value.
 
