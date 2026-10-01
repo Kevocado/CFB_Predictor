@@ -136,7 +136,8 @@ def public(monkeypatch):
     monkeypatch.setattr(facts_mod.store, "get_predictions_for_week", lambda season, week, games_df: _week_rows())
     monkeypatch.setattr(
         facts_mod.store, "get_track_record",
-        lambda: {"games": {"n_resolved": 30, "pct_moneyline_correct": 0.6, "n_rebuilt": 2}},
+        lambda: {"games": {"n_resolved": 30, "pct_moneyline_correct": 0.6, "n_pre_kickoff": 30,
+                           "pre_kickoff": {"n_resolved": 30, "pct_moneyline_correct": 0.6}}},
     )
     return TestClient(app)
 
@@ -219,6 +220,42 @@ def test_record_reports_pre_kickoff_hits_over_settled(public, monkeypatch):
     body = public.get(f"/facts/{GAME_ID}").json()
 
     assert body["record"] == {"label": "Picks made before kickoff", "hits": 18, "settled": 30}
+
+
+def test_the_record_block_reads_the_pre_kickoff_figure_not_the_headline(public, monkeypatch):
+    """The label says "made before kickoff", so the number under it has to be that subset.
+
+    Since 2026-10-01 `games.n_resolved` counts every recorded pick, so a block that read the
+    headline would be labelling an all-picks figure as pre-game -- the one mislabelling the
+    rule still forbids. Both figures are set here and only the pre-kickoff one may surface:
+    11 settled at 0.545 rounds to 6 hits, where the headline would have shown 12 at 0.58 ->
+    7 hits over 12.
+    """
+    _install_snapshot(monkeypatch, _snapshot())
+    monkeypatch.setattr(
+        facts_mod.store, "get_track_record",
+        lambda: {"games": {
+            "n_resolved": 12, "pct_moneyline_correct": 0.58, "n_pre_kickoff": 11,
+            "pre_kickoff": {"n_resolved": 11, "pct_moneyline_correct": 0.545},
+        }},
+    )
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    assert body["record"] == {"label": "Picks made before kickoff", "hits": 6, "settled": 11}
+
+
+def test_the_record_block_is_omitted_rather_than_mislabelled(public, monkeypatch):
+    """A payload with no `pre_kickoff` yields no record, not a record with the wrong label."""
+    _install_snapshot(monkeypatch, _snapshot())
+    monkeypatch.setattr(
+        facts_mod.store, "get_track_record",
+        lambda: {"games": {"n_resolved": 12, "pct_moneyline_correct": 0.58}},
+    )
+
+    body = public.get(f"/facts/{GAME_ID}").json()
+
+    assert body["record"] is None
 
 
 # --- pick_timing: the three cases ---------------------------------------
@@ -396,7 +433,8 @@ def live(monkeypatch):
     monkeypatch.setattr(facts_mod.routes, "get_player_props", lambda season, week: [])
     monkeypatch.setattr(
         facts_mod.store, "get_track_record",
-        lambda: {"games": {"n_resolved": 12, "pct_moneyline_correct": 0.58, "n_rebuilt": 1}},
+        lambda: {"games": {"n_resolved": 12, "pct_moneyline_correct": 0.58, "n_pre_kickoff": 11,
+                           "pre_kickoff": {"n_resolved": 11, "pct_moneyline_correct": 0.545}}},
     )
     return TestClient(app)
 

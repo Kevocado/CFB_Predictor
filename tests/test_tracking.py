@@ -1,5 +1,7 @@
 import contextlib
+import os
 import sqlite3
+import time
 
 import pandas as pd
 import pytest
@@ -310,8 +312,14 @@ def test_get_predictions_for_week_marks_picks_rebuilt_after_kickoff():
     assert by_id["g3"]["rebuilt"] is True
 
 
-def test_track_record_leaves_rebuilt_picks_out_of_every_rate():
-    """Picks backfilled after kickoff are shown, never counted (PRODUCT.md)."""
+def test_track_record_counts_a_pick_backfilled_after_kickoff_and_says_so():
+    """Picks backfilled after kickoff are counted AND disclosed (Kevin, 2026-10-01).
+
+    This used to read the other way ("shown, never counted", PRODUCT.md). The rule
+    changed: the model is rerun constantly, and a pick recorded after kickoff is a
+    recorded pick, so it counts in the headline. What must not change is that it is
+    never presented as a pre-game pick -- hence the label, not the exclusion.
+    """
     store.record_game_predictions([_future_game(game_id="g1")])
     store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 10, "away_score": 20}]))
     store.record_resolved_game_predictions([{
@@ -321,13 +329,16 @@ def test_track_record_leaves_rebuilt_picks_out_of_every_rate():
 
     games = store.get_track_record()["games"]
 
-    assert games["n_resolved"] == 1
-    assert games["n_rebuilt"] == 1
+    assert games["n_resolved"] == 2
+    assert games["n_pre_kickoff"] == 1
+    assert sorted(r["made_before_kickoff"] for r in games["per_pick"] if r["market"] == "moneyline") == [False, True]
 
 
-def test_an_unreadable_snapshot_time_counts_as_rebuilt():
-    """When the timing can't be proven, the honest default is 'rebuilt'."""
+def test_an_unreadable_snapshot_time_is_never_labelled_pre_kickoff():
+    """When the timing can't be proven, the honest default is 'not before kickoff'."""
     assert store._snapshotted_after_kickoff("not a time", "2025-09-07T17:00:00+00:00") is True
+    assert store._made_before_kickoff("not a time", "2025-09-07T17:00:00+00:00") is False
+    assert store._made_before_kickoff("2025-09-07T17:00:00+00:00", None) is False
 
 
 # --- a missing probability must not become a recorded verdict ------------------
@@ -564,25 +575,37 @@ def test_a_genuinely_graded_market_is_still_counted_in_the_aggregate():
     assert summary["pct_totals_correct"] == 0.0
 
 
-# --- the pre-kickoff guard on the prop path -----------------------------------
+# --- every recorded pick counts; the pre-kickoff figure sits beside it ----------
 #
-# The games half of this guard already exists here: `get_track_record` applies
-# `_snapshotted_after_kickoff` to `game_predictions` and reports the excluded rows
-# apart under `games.n_rebuilt`, and `get_predictions_for_week` marks them
-# `rebuilt` (test_track_record_leaves_rebuilt_picks_out_of_every_rate).
+# Kevin, 2026-10-01, in `predictor-hub`
+# docs/superpowers/specs/2026-10-01-track-record-counts-every-pick.md (merged as
+# predictor-hub #66), verbatim:
 #
-# The prop half did not. `_summarize_player_props` counted EVERY resolved row, so
-# `player_props.n_resolved`, `hit_rate_when_called` and `brier_score` -- the props
-# half of the published track record -- were computed partly from picks the model
-# made after the game started. A hit rate built on information the model could not
-# have had is exactly the look-forward bias this product exists to measure against,
-# and NFL_Predictor's `src/nfl_predictor/tracking/store.py` `_summarize_player_props`
-# already refuses those rows and reports them under its own `n_rebuilt`.
+#   "i dont really care about picks made after kickoff because im always re
+#    running the models ... with every model change it will stop tracking ...
+#    make it that whats recorded remains recorded and then just use every
+#    prediction we make for the track record stuff."
 #
-# `player_prop_predictions` carries no `commence_time`, so the guard joins to
-# `game_predictions` on `game_id` (that table's primary key, so the join is
-# many-to-one and safe) and fails closed -- an unparseable timestamp, or a prop row
-# whose game is absent, is treated as rebuilt rather than counted.
+# That reverses the exclusion rule CFB #26 added eight hours earlier, which
+# dropped post-kickoff rows from `n_resolved` and reported them as `n_rebuilt`.
+# What replaced it:
+#
+#   1. Recorded stays recorded. Append-only; a rerun never overwrites a pick.
+#   2. One counted pick per (game, market): the EARLIEST recorded one. A later
+#      rerun is kept as history but neither replaces nor double-counts -- otherwise
+#      re-running until the model is right would be free.
+#   3. The headline counts every counted pick, whenever it was made. The figure
+#      beside it is the pre-kickoff SUBSET, with its own n.
+#   4. Honesty is disclosure, not exclusion: every pick row carries
+#      `made_before_kickoff`, derived from its own `snapshotted_at` against the
+#      game's start as UTC INSTANTS, plus its timestamp. Never a stored flag, and
+#      never a `true` the timestamps do not prove.
+#
+# So a post-kickoff pick is no longer hidden -- it is counted AND labelled. The
+# load-bearing half of #26 that survives is `test_grading_never_restamps_the_
+# snapshot_timestamp_the_guard_reads` below: if a reconcile rewrote `snapshotted_at`
+# then both the earliest-pick rule and the disclosure label would be corruptible,
+# because both are read off that column.
 
 
 def _insert_game_row(game_id, commence_time):
@@ -626,18 +649,20 @@ def _insert_prop_row(game_id, player_id, snapshotted_at, market="rushing_yards",
         )
 
 
-def test_prop_track_record_excludes_post_kickoff_picks_from_every_market():
-    """The defect, stated as an assertion.
+def test_prop_headline_counts_every_recorded_pick_with_the_pre_kickoff_subset_beside_it():
+    """Rule 3, on the yardage family: the headline is every counted pick.
 
-    Two props resolve against the same yardage market: one snapshotted before its
-    game's kickoff (a real pick, off by 10) and one snapshotted a year after it (a
-    reconstruction, off by 70). The post-kickoff row is exactly the information the
-    model could not have had when the line was live.
+    Two props resolve against the same yardage market, by different players in
+    different games: one snapshotted before its game's kickoff (off by 10) and one
+    snapshotted a year after its game's kickoff (off by 70). Under #26 the second
+    was dropped and reported as `n_rebuilt`. Under the current rule it COUNTS --
+    `n_resolved` 2 and the error is the mean of 10 and 70 -- because it is a
+    recorded pick and the model was rerun on that game.
 
-    Before the guard: `n_resolved` is 2 and the error is the mean of 10 and 70 --
-    a published accuracy number computed partly from a look-forward row. After it:
-    only the pre-kickoff pick counts, and the excluded row is reported apart under
-    `n_rebuilt` rather than silently dropped.
+    The figure beside it is the pre-kickoff subset with its own n, which is the
+    honest read of live performance: `pre_kickoff.rushing_yards` is the same
+    pre-kickoff pick alone, error 10, and `n_pre_kickoff` is its count. Neither
+    number replaces the other; the page shows both because they differ.
     """
     _insert_game_row("g_pre", "2099-09-04T20:20:00+00:00")
     _insert_game_row("g_post", "2000-09-04T20:20:00+00:00")
@@ -648,26 +673,28 @@ def test_prop_track_record_excludes_post_kickoff_picks_from_every_market():
 
     props = store.get_track_record()["player_props"]
 
-    assert props["rushing_yards"]["n_resolved"] == 1, (
-        "a pick snapshotted after kickoff is still in the published record"
+    # The headline counts both recorded picks: (|90-80| + |10-80|) / 2 = 40.
+    assert props["rushing_yards"]["n_resolved"] == 2, (
+        "a recorded pick was dropped from the headline; the record is append-only"
     )
-    # |90-80| = 10. Leaking the post-kickoff row in gives (10 + 70) / 2 = 40.
-    assert props["rushing_yards"]["mean_absolute_error"] == pytest.approx(10.0)
-    assert props["rushing_yards"]["mean_signed_error"] == pytest.approx(10.0)
-    # Reported apart rather than silently dropped, matching games.n_rebuilt.
-    assert props["n_rebuilt"] == 1, (
-        f"the post-kickoff prop row was not reported apart: {props['n_rebuilt']}"
-    )
+    assert props["rushing_yards"]["mean_absolute_error"] == pytest.approx(40.0)
+    assert props["rushing_yards"]["mean_signed_error"] == pytest.approx(-30.0)
+    # The secondary figure is the pre-kickoff subset alone, with its own n.
+    assert props["n_pre_kickoff"] == 1
+    assert props["pre_kickoff"]["rushing_yards"]["n_resolved"] == 1
+    assert props["pre_kickoff"]["rushing_yards"]["mean_absolute_error"] == pytest.approx(10.0)
+    # #26's exclusion key is gone; the count it used to carry is now the pre-kickoff n.
+    assert "n_rebuilt" not in props
 
 
-def test_prop_track_record_excludes_post_kickoff_picks_from_brier_and_hit_rate():
-    """The two metrics the reviewer named, and the two a yardage MAE cannot reach.
+def test_prop_headline_counts_every_recorded_pick_in_the_brier_and_hit_rate():
+    """The same swap on `anytime_td`, where the two numbers a reader quotes live.
 
-    `anytime_td` is scored, not yardage: `hit_rate_when_called` and `brier_score`
-    are the numbers a reader is most likely to quote. A post-kickoff anytime-TD row
-    is planted alongside a pre-kickoff one that scored, and both must be excluded
-    from the scoring pair while still being counted in `n_rebuilt` -- a guard that
-    filtered only the yardage family, or only `n_resolved`, would leave these wrong.
+    `hit_rate_when_called` and `brier_score` move together with the headline, and
+    the pre-kickoff subset keeps #26's figures beside them: the pre-kickoff call
+    at 0.8 scored (hit rate 1.0, Brier 0.04), the post-kickoff one at 0.9 missed,
+    so the headline is 0.5 and 0.425 -- and the confidence buckets, built from the
+    same frame, are counted over the headline.
     """
     _insert_game_row("g_pre", "2099-09-04T20:20:00+00:00")
     _insert_game_row("g_post", "2000-09-04T20:20:00+00:00")
@@ -678,25 +705,25 @@ def test_prop_track_record_excludes_post_kickoff_picks_from_brier_and_hit_rate()
 
     props = store.get_track_record()["player_props"]
 
-    assert props["anytime_td"]["n_resolved"] == 1
-    assert props["anytime_td"]["n_called"] == 1
-    # Only the pre-kickoff row, which was called at 0.8 and scored: 1.0.
-    # Counting the post-kickoff miss as well gives 0.5.
-    assert props["anytime_td"]["hit_rate_when_called"] == pytest.approx(1.0)
-    # (0.8 - 1.0)^2 = 0.04. With the post-kickoff row the mean is
-    # (0.04 + 0.81) / 2 = 0.425 -- a materially different published calibration.
-    assert props["anytime_td"]["brier_score"] == pytest.approx(0.04)
-    # The confidence buckets are built from the same filtered frame, so they move too.
-    assert sum(b["n"] for b in props["anytime_td"]["confidence_buckets"]) == 1
-    assert props["n_rebuilt"] == 1
+    assert props["anytime_td"]["n_resolved"] == 2
+    assert props["anytime_td"]["n_called"] == 2
+    assert props["anytime_td"]["hit_rate_when_called"] == pytest.approx(0.5)
+    assert props["anytime_td"]["brier_score"] == pytest.approx(0.425)
+    assert sum(b["n"] for b in props["anytime_td"]["confidence_buckets"]) == 2
+    assert props["n_pre_kickoff"] == 1
+    assert props["pre_kickoff"]["anytime_td"]["n_resolved"] == 1
+    assert props["pre_kickoff"]["anytime_td"]["hit_rate_when_called"] == pytest.approx(1.0)
+    assert props["pre_kickoff"]["anytime_td"]["brier_score"] == pytest.approx(0.04)
+    assert sum(b["n"] for b in props["pre_kickoff"]["anytime_td"]["confidence_buckets"]) == 1
 
 
-def test_prop_track_record_excludes_a_pick_snapshotted_exactly_at_kickoff():
-    """The boundary is the games path's `>=`, pinned so it cannot drift.
+def test_made_before_kickoff_is_the_boundary_and_the_label_never_flips_it():
+    """The `>=` boundary, pinned on the label rather than on exclusion.
 
-    A row stamped at the instant of kickoff is a reconstruction, not a pick; one
-    stamped a second earlier is a pick. A test that only asserted "some post-kickoff
-    row is excluded" would pass against an off-by-one guard in either direction.
+    A row stamped at the instant of kickoff is not made before kickoff; one stamped
+    a second earlier is. Both COUNT in the headline now, so the boundary is only
+    observable where the rule says it is: the `made_before_kickoff` label per pick,
+    and membership of the pre-kickoff subset.
     """
     _insert_game_row("g_boundary", "2099-09-04T20:20:00+00:00")
     _insert_prop_row("g_boundary", "p_at", "2099-09-04T20:20:00+00:00", actual=80.0)
@@ -704,17 +731,22 @@ def test_prop_track_record_excludes_a_pick_snapshotted_exactly_at_kickoff():
 
     props = store.get_track_record()["player_props"]
 
-    assert props["rushing_yards"]["n_resolved"] == 1
-    assert props["n_rebuilt"] == 1
+    assert props["rushing_yards"]["n_resolved"] == 2, "both picks are recorded picks"
+    labels = {r["player_id"]: r["made_before_kickoff"] for r in props["per_pick"]}
+    assert labels == {"p_at": False, "p_before": True}, labels
+    assert props["n_pre_kickoff"] == 1
+    assert props["pre_kickoff"]["rushing_yards"]["n_resolved"] == 1
 
 
-def test_prop_track_record_fails_closed_when_the_kickoff_time_cannot_be_read():
-    """Same rule as `test_an_unreadable_snapshot_time_counts_as_rebuilt`.
+def test_a_pick_whose_timing_cannot_be_proven_counts_but_is_never_labelled_pre_kickoff():
+    """Disclosure fails closed; exclusion no longer exists.
 
-    When the timing cannot be proven, the honest default is "after kickoff": an
-    unparseable `snapshotted_at`, and a prop row whose game never reached
-    `game_predictions` (so there is no kickoff time to compare against at all).
-    Both are excluded rather than counted on the strength of a timestamp alone.
+    An unparseable `snapshotted_at`, and a prop row whose game never reached
+    `game_predictions` (so there is no kickoff time to compare against at all),
+    are both recorded picks, so both count in the headline. Neither may be labelled
+    `made_before_kickoff`: the timestamps do not prove it, and the rule is never to
+    backfill a `true` they do not prove. So both are absent from the pre-kickoff
+    subset -- `n_pre_kickoff` is 0 even though the headline is 2.
     """
     _insert_game_row("g_bad", "2099-09-04T20:20:00+00:00")
     _insert_prop_row("g_bad", "p_bad_time", "not a time", actual=80.0)
@@ -722,48 +754,254 @@ def test_prop_track_record_fails_closed_when_the_kickoff_time_cannot_be_read():
 
     props = store.get_track_record()["player_props"]
 
-    assert props["rushing_yards"]["n_resolved"] == 0
-    assert props["rushing_yards"]["mean_absolute_error"] is None
-    assert props["n_rebuilt"] == 2, (
-        "a prop row that cannot be proven pre-kickoff was counted as a pick"
+    assert props["rushing_yards"]["n_resolved"] == 2
+    assert props["rushing_yards"]["mean_absolute_error"] == pytest.approx(5.0)
+    assert props["n_pre_kickoff"] == 0, (
+        "a prop row whose timing cannot be proven was labelled made before kickoff"
+    )
+    assert props["pre_kickoff"]["rushing_yards"]["n_resolved"] == 0
+    assert all(r["made_before_kickoff"] is False for r in props["per_pick"])
+
+
+def test_every_counted_pick_carries_its_own_timestamp_and_the_pre_kickoff_label():
+    """Rule 4, asserted on the published rows rather than on the aggregate.
+
+    `made_before_kickoff` is derived, so the test asserts the two things that make
+    it checkable: the row's own stamp is exposed next to the label, and the label
+    agrees with that stamp read against the game's start. A `per_pick` list that
+    carried the label without the timestamp could not be audited by a reader.
+    """
+    _insert_game_row("g_pre", "2099-09-04T20:20:00+00:00")
+    _insert_game_row("g_post", "2000-09-04T20:20:00+00:00")
+    _insert_prop_row("g_pre", "p_pre", "2099-09-01T00:00:00+00:00", actual=80.0)
+    _insert_prop_row("g_post", "p_post", "2001-01-01T00:00:00+00:00", actual=80.0)
+
+    rows = {r["player_id"]: r for r in store.get_track_record()["player_props"]["per_pick"]}
+
+    assert set(rows) == {"p_pre", "p_post"}
+    for row in rows.values():
+        assert row["snapshotted_at"], "a pick row was published without its own timestamp"
+        assert isinstance(row["made_before_kickoff"], bool)
+        assert row["counted"] is True
+    assert rows["p_pre"]["snapshotted_at"] == "2099-09-01T00:00:00+00:00"
+    assert rows["p_pre"]["made_before_kickoff"] is True
+    assert rows["p_post"]["made_before_kickoff"] is False
+
+
+# --- rule 2: one counted pick per (game, market), the earliest one -------------
+#
+# `player_prop_predictions`' primary key is (game_id, player_id, market) and every
+# write is `INSERT OR IGNORE`, so a rerun of the same player prop on the same game
+# cannot land at all: the earliest recorded pick IS the row, and a later one is
+# kept nowhere in the table. The two tests below prove that end to end, because
+# "re-running until the model is right must be free" is a claim about the write
+# path as much as the read side.
+#
+# Note the key is (game, PLAYER, market), not (game, market): a yardage pick is one
+# pick per player per game, and collapsing a game's five rushers into one pick
+# would delete the record rather than deduplicate it.
+
+
+def test_the_counted_pick_is_the_earliest_recorded_one_not_a_rerun():
+    """A rerun neither replaces the counted pick nor counts a second time.
+
+    The same player prop is recorded twice with different predictions -- the model
+    changed between the two runs. The headline must be the FIRST pick's number, off
+    by 10, over `n_resolved` 1. Had the rerun been counted, re-running until the
+    model was right would have been free, and the second run here is deliberately
+    the better one (off by 0), so a double count would also be the flattering error.
+    """
+    _insert_game_row("g_rerun", "2099-09-04T20:20:00+00:00")
+    first = store.record_player_prop_predictions([
+        _prop(game_id="g_rerun", player_id="p_rerun", market="rushing_yards",
+              predicted_value=90.0, player_name="Rerun", position="RB"),
+    ])
+    with contextlib.closing(store._connect()) as conn, conn:
+        stamp = pd.read_sql(
+            "SELECT snapshotted_at FROM player_prop_predictions WHERE player_id = 'p_rerun'", conn
+        ).iloc[0]["snapshotted_at"]
+    store.reconcile_player_prop_predictions(
+        pd.DataFrame([{"game_id": "g_rerun", "player_id": "p_rerun", "rushing_yards": 80}])
+    )
+    rerun = store.record_player_prop_predictions([
+        _prop(game_id="g_rerun", player_id="p_rerun", market="rushing_yards",
+              predicted_value=80.0, player_name="Rerun", position="RB"),
+    ])
+
+    assert first == 1
+    assert rerun == 0, "the rerun was admitted; it would have double-counted the pick"
+
+    props = store.get_track_record()["player_props"]
+
+    assert props["rushing_yards"]["n_resolved"] == 1
+    assert props["rushing_yards"]["mean_absolute_error"] == pytest.approx(10.0)
+    assert [r["snapshotted_at"] for r in props["per_pick"]] == [stamp]
+
+
+def test_earliest_recorded_keeps_one_row_per_key_and_sorts_by_utc_instant():
+    """Rule 2 as a unit, on a frame that CAN hold two rows per key.
+
+    The write path cannot produce the duplicate today, so this drives the helper
+    directly: three rows share one key, and the one whose stamp is the EARLIEST UTC
+    instant wins -- including a case where the winner is not the first row in the
+    frame, and a row whose stamp cannot be parsed, which loses to anything provable.
+    A later rerun is dropped from the counted set, not merely deprioritised.
+    """
+    frame = pd.DataFrame([
+        {"game_id": "g1", "player_id": "p1", "market": "rushing_yards",
+         "snapshotted_at": "2026-09-12T15:00:00+00:00", "predicted_value": 2.0},
+        # Same instant as the row above, expressed as +09:00: 2026-09-13T00:00+09:00
+        # is 2026-09-12T15:00Z. Ties go to the first in the frame, stably.
+        {"game_id": "g1", "player_id": "p1", "market": "rushing_yards",
+         "snapshotted_at": "2026-09-13T00:00:00+09:00", "predicted_value": 3.0},
+        # Earlier instant (2026-09-12T14:30Z) despite being listed last: this is
+        # the counted pick, and a wall-clock sort would have ranked it 2nd.
+        {"game_id": "g1", "player_id": "p1", "market": "rushing_yards",
+         "snapshotted_at": "2026-09-12T23:30:00+09:00", "predicted_value": 1.0},
+        # A different player on the same game and market is a DIFFERENT pick.
+        {"game_id": "g1", "player_id": "p2", "market": "rushing_yards",
+         "snapshotted_at": "2026-09-12T16:00:00+00:00", "predicted_value": 4.0},
+        # Unparseable stamp: kept (the pick exists) but only if nothing proves earlier.
+        {"game_id": "g2", "player_id": "p3", "market": "anytime_td",
+         "snapshotted_at": "not a time", "predicted_value": 5.0},
+        {"game_id": "g2", "player_id": "p3", "market": "anytime_td",
+         "snapshotted_at": "2026-09-12T16:00:00+00:00", "predicted_value": 6.0},
+    ])
+
+    counted = store._earliest_recorded(frame, ("game_id", "player_id", "market"))
+
+    # Three rows share (g1, p1, rushing_yards) and only the 14:30Z one counts, so the
+    # list has one row per KEY, not one per row in the frame.
+    assert list(counted["predicted_value"]) == [1.0, 4.0, 6.0], (
+        "the counted pick is not the earliest recorded one per key"
     )
 
 
-# --- is the READ-side guard sufficient on its own? ------------------------------
-#
-# NFL's PR #21 guarded two sites: `_summarize_player_props` and
-# `reconcile_player_prop_predictions`. Only the first is ported here, and the
-# honest reason is not "out of scope" -- it is that the second cannot reach the
-# published record. These two tests are the proof, so that reason is checked
-# rather than assumed.
-#
-# The invariant, stated exactly:
-#
-#   Every row that reaches `n_resolved`, `hit_rate_when_called` or `brier_score`
-#   passes through the `_snapshotted_after_kickoff` guard, regardless of how it
-#   entered the table.
-#
-# It holds for two structural reasons, and each has a test below.
-#
-# 1. The write path admits post-kickoff rows -- it does NOT have to refuse them
-#    for the record to stay honest. `record_player_prop_predictions` (store.py:646)
-#    stamps `snapshotted_at` with `now()` and never compares it to the game's
-#    kickoff, and `reconcile_player_prop_predictions` (store.py:695) grades any
-#    row that joins to stats. Both are demonstrated below.
-#
-# 2. Neither of them can REWRITE that stamp. `reconcile_player_prop_predictions`
-#    is an `UPDATE ... SET resolved = 1, actual_value = ?` -- it does not mention
-#    `snapshotted_at`, and no other write against the table exists. So the guard
-#    reads the row's original provenance however the row arrived, and
-#    `_summarize_player_props` (the only summariser; sole caller
-#    `store.py:342`) applies it to the entire `resolved = 1` set.
-#
-# If (1) or (2) ever changed, the published numbers would go wrong again and these
-# tests would fail. That is the point of writing them.
+def test_the_games_half_also_counts_every_recorded_game_with_the_pre_kickoff_subset():
+    """The swap on `games`, which is the headline the CFB page and facts.py read.
+
+    Two resolved games: one snapshotted before kickoff and missed its moneyline
+    call, one recorded after its kickoff (a backfill) and hit. The headline counts
+    both -- 2 at 0.5 -- and `pre_kickoff` is the one made before kickoff, 1 at 0.0.
+    """
+    store.record_game_predictions([_future_game(game_id="g1")])
+    store.reconcile_game_predictions(pd.DataFrame([{"game_id": "g1", "home_score": 10, "away_score": 20}]))
+    store.record_resolved_game_predictions([{
+        "game_id": "g3", "home_team": "H", "away_team": "A", "commence_time": "2025-09-07T17:00:00+00:00",
+        "home_win_prob": 0.4, "away_win_prob": 0.6, "actual_home_score": 10, "actual_away_score": 24,
+    }])
+
+    games = store.get_track_record()["games"]
+
+    assert games["n_resolved"] == 2
+    assert games["pct_moneyline_correct"] == pytest.approx(0.5)
+    assert games["n_pre_kickoff"] == 1
+    assert games["pre_kickoff"]["n_resolved"] == 1
+    assert games["pre_kickoff"]["pct_moneyline_correct"] == pytest.approx(0.0)
+    assert "n_rebuilt" not in games
+    moneyline = {r["game_id"]: r for r in games["per_pick"] if r["market"] == "moneyline"}
+    assert moneyline["g1"]["made_before_kickoff"] is True
+    assert moneyline["g3"]["made_before_kickoff"] is False
+    assert moneyline["g1"]["snapshotted_at"] and moneyline["g3"]["snapshotted_at"]
 
 
-def test_rows_the_write_path_admits_after_kickoff_never_reach_the_published_record():
-    """Proves (1): the guard keys on PROVENANCE, not on whether the writer was careful.
+# --- `made_before_kickoff` is derived from UTC instants, not wall clocks --------
+#
+# Both timestamps are stored as ISO strings and either may carry an offset (a
+# commence_time taken from an upstream feed) or none (both are written in UTC).
+# Comparing the two STRINGS -- or their naive wall-clock parts -- is the bug this
+# derivation is most likely to ship, because a +09:00 feed reads a different
+# instant on the same day than a +00:00 one. Each case below is chosen so that the
+# wall-clock answer is the OPPOSITE of the instant answer.
+
+
+def test_made_before_kickoff_is_derived_from_utc_instants_not_wall_clock_strings():
+    """Two straddles where wall-clock comparison gives the opposite answer.
+
+    Case A: stamped `2026-09-12T23:30:00+09:00` (14:30Z) against a
+    `2026-09-12T15:00:00+00:00` kickoff. The instants say before kickoff, so the
+    label is True and the pick is in the pre-kickoff subset. The wall clocks read
+    "23:30" against "15:00", which a string or naive comparison calls AFTER.
+
+    Case B: stamped `2026-09-12T23:30:00-11:00` (10:30Z) against a
+    `2026-09-12T23:45:00+14:00` kickoff (09:45Z). The instants say after kickoff, so the
+    label is False; the wall clocks read "23:30" against "23:45", which a naive
+    comparison calls BEFORE. Both pairs are on the SAME calendar date in both notations,
+    so nothing but the offset can explain the difference -- and +14:00 against -11:00 is
+    the widest gap the zones allow, which is how this pair is forced rather than picked.
+    """
+    _insert_game_row("g_a", "2026-09-12T15:00:00+00:00")
+    _insert_game_row("g_b", "2026-09-12T23:45:00+14:00")
+    _insert_prop_row("g_a", "p_a", "2026-09-12T23:30:00+09:00", actual=80.0)
+    _insert_prop_row("g_b", "p_b", "2026-09-12T23:30:00-11:00", actual=80.0)
+
+    # The wall-clock reading, stated so the test cannot pass by accident on either side.
+    assert "2026-09-12T23:30:00+09:00" > "2026-09-12T15:00:00+00:00"  # would say "after"
+    assert "2026-09-12T23:30:00-11:00" < "2026-09-12T23:45:00+14:00"  # would say "before"
+
+    props = store.get_track_record()["player_props"]
+    labels = {r["player_id"]: r["made_before_kickoff"] for r in props["per_pick"]}
+
+    assert labels == {"p_a": True, "p_b": False}, labels
+    assert props["n_pre_kickoff"] == 1
+    assert props["pre_kickoff"]["rushing_yards"]["n_resolved"] == 1
+    assert props["rushing_yards"]["n_resolved"] == 2, "both are recorded picks either way"
+
+
+def test_made_before_kickoff_ignores_the_machine_timezone():
+    """The derivation reads the offsets in the data, never the host's clock.
+
+    Same two instants, run under four host timezones (UTC, US Pacific, Japan, and
+    Kiritimati at UTC+14). A derivation that dropped the offset and read the
+    machine's zone would give different answers in different places; all four runs
+    must agree.
+    """
+    stamp, kickoff = "2026-09-12T23:30:00+09:00", "2026-09-12T15:00:00+00:00"
+    original = os.environ.get("TZ")
+    try:
+        answers = []
+        for zone in ("UTC", "America/Los_Angeles", "Asia/Tokyo", "Pacific/Kiritimati"):
+            os.environ["TZ"] = zone
+            time.tzset()
+            answers.append(store._made_before_kickoff(stamp, kickoff))
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
+
+    assert answers == [True, True, True, True], answers
+    # And the two instants that are equal are not "before", whichever way they are written.
+    assert store._made_before_kickoff(
+        "2026-09-12T15:00:00+00:00", "2026-09-13T00:00:00+09:00"
+    ) is False, "an instant equal to kickoff is not made before kickoff"
+
+
+def test_a_naive_stamp_is_read_as_utc_which_is_how_it_is_written():
+    """Both columns are written in UTC, so a stamp with no offset is a UTC instant.
+
+    `record_game_predictions`/`record_player_prop_predictions` write
+    `datetime.now(timezone.utc).isoformat()`, and a feed may hand back a kickoff with
+    no offset. These are naive UTC, not naive local, so this pair straddles the
+    boundary on the day and is labelled from the clock reading.
+    """
+    assert store._made_before_kickoff("2026-09-12T14:30:00", "2026-09-12T15:00:00") is True
+    assert store._made_before_kickoff("2026-09-12T15:00:00", "2026-09-12T15:00:00") is False
+    assert store._made_before_kickoff("2026-09-12T15:00:01", "2026-09-12T15:00:00") is False
+
+
+# --- does the read side see each row's own provenance? -------------------------
+#
+# #26 asked whether the READ side alone is enough, given that
+# `reconcile_player_prop_predictions` also grades post-kickoff rows. Under the
+# exclusion rule the answer was "the record must be empty"; under this rule it is
+# "the row must be counted AND labelled". The two tests below check the second
+# half, and the load-bearing one -- the stamp is never restamped -- is unchanged.
+
+
+def test_rows_the_write_path_admits_after_kickoff_are_labelled_not_hidden():
+    """Proves (1) under the new rule: the label keys on PROVENANCE.
 
     This drives the real public writers -- `record_player_prop_predictions` and
     `reconcile_player_prop_predictions` -- so the rows are admitted and graded the
@@ -772,8 +1010,10 @@ def test_rows_the_write_path_admits_after_kickoff_never_reach_the_published_reco
     the kickoff, and the reconcile grades anything that joins to stats. The game
     kicked off in 2000, so `now()` is unambiguously after it.
 
-    The published record must still be empty. If it is not, the read-side guard is
-    not sufficient and the reconcile guard has to be ported after all.
+    They count, and every one of them is labelled `made_before_kickoff: False` and
+    kept out of the pre-kickoff subset. A record that counted them silently would
+    be presenting a post-kickoff pick as a pre-game one, which is the one thing
+    this rule still forbids.
     """
     _insert_game_row("g_done", "2000-09-04T20:20:00+00:00")
 
@@ -782,8 +1022,6 @@ def test_rows_the_write_path_admits_after_kickoff_never_reach_the_published_reco
         _prop(game_id="g_done", player_id="late_yds", market="rushing_yards", predicted_value=999.0),
     ])
     graded = store.reconcile_player_prop_predictions(pd.DataFrame([
-        # The anytime_td row is graded as a MISS, so if it leaked in the published
-        # hit rate would fall from None to 0.0 rather than merely changing a count.
         {"game_id": "g_done", "player_id": "late_td",
          "rushing_tds": 0, "receiving_tds": 0, "passing_tds": 0},
         {"game_id": "g_done", "player_id": "late_yds", "rushing_yards": 5},
@@ -796,33 +1034,35 @@ def test_rows_the_write_path_admits_after_kickoff_never_reach_the_published_reco
 
     props = store.get_track_record()["player_props"]
 
-    assert props["anytime_td"]["n_resolved"] == 0
-    assert props["anytime_td"]["hit_rate_when_called"] is None, (
-        "a graded post-kickoff anytime_td pick reached the published hit rate"
-    )
-    assert props["anytime_td"]["brier_score"] is None, (
-        "a graded post-kickoff anytime_td pick reached the published Brier score"
-    )
-    assert props["rushing_yards"]["n_resolved"] == 0
-    assert props["rushing_yards"]["mean_absolute_error"] is None
-    assert props["n_rebuilt"] == 2, "the write path admitted rows the record did not account for"
+    assert props["anytime_td"]["n_resolved"] == 1
+    assert props["anytime_td"]["hit_rate_when_called"] == pytest.approx(0.0)
+    assert props["anytime_td"]["brier_score"] == pytest.approx(0.9801)
+    assert props["rushing_yards"]["n_resolved"] == 1
+    assert props["rushing_yards"]["mean_absolute_error"] == pytest.approx(994.0)
+    # Counted, and accounted for as post-kickoff on every row that carries them.
+    assert props["n_pre_kickoff"] == 0
+    assert all(r["made_before_kickoff"] is False for r in props["per_pick"])
+    assert props["pre_kickoff"]["anytime_td"]["n_resolved"] == 0
+    assert props["pre_kickoff"]["rushing_yards"]["mean_absolute_error"] is None
 
 
 def test_grading_never_restamps_the_snapshot_timestamp_the_guard_reads():
-    """Proves (2), and it is the load-bearing half.
+    """Proves (2), and it is the load-bearing half -- unchanged from #26, and now
+    load-bearing for MORE.
 
-    The read-side guard decides pre-kickoff-ness from `snapshotted_at`, and the
-    write path cannot correct a bad stamp because it cannot alter one. This is the
-    only reason a late row cannot be relabelled as a pick: the writer stamps
-    `now()`, grading leaves that stamp alone, and the summariser re-reads it every
-    time.
+    Under #26 this pinned the exclusion rule: the read side read pre-kickoff-ness
+    off `snapshotted_at`, so a write path able to rewrite that column could put a
+    look-forward pick back into the published record. Under the current rule both
+    things the record now promises are read off that same column -- which pick
+    counts (the earliest recorded one) and whether it is labelled
+    `made_before_kickoff`. A restamp breaks both at once: it would let a rerun
+    masquerade as the earliest pick, and it would backfill a `true` the timestamps
+    do not prove, which is the one thing the spec still forbids outright.
 
-    So the invariant to pin is that grading is provenance-preserving. It asserts no
-    particular metric -- it asserts that the timestamp the guard depends on is
-    byte-identical before and after `reconcile_player_prop_predictions` runs. Add
-    `snapshotted_at = ?` to that UPDATE and this fails, which is exactly the change
-    that would let the write path defeat the read-side guard and silently put
-    look-forward picks back into the published record.
+    So the invariant is unchanged and the test is kept verbatim in substance: it
+    asserts no particular metric, only that the stamp is byte-identical before and
+    after `reconcile_player_prop_predictions` runs. Add `snapshotted_at = ?` to that
+    UPDATE and this fails.
     """
     _insert_game_row("g_kept", "2000-09-04T20:20:00+00:00")
     store.record_player_prop_predictions([
@@ -845,5 +1085,8 @@ def test_grading_never_restamps_the_snapshot_timestamp_the_guard_reads():
         "grading rewrote snapshotted_at, so a late row could be relabelled as a "
         "pick and the read-side guard would stop protecting the published record"
     )
-    # And the record is still honest for the same reason.
-    assert store.get_track_record()["player_props"]["n_rebuilt"] == 1
+    # And the record is still honest for the same reason: the row is counted as the
+    # pick it was, and labelled with the truth about when it was made.
+    props = store.get_track_record()["player_props"]
+    assert props["n_pre_kickoff"] == 0
+    assert [r["made_before_kickoff"] for r in props["per_pick"]] == [False]

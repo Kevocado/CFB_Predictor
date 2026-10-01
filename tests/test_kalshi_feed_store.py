@@ -211,10 +211,13 @@ def test_calibration_grades_spread_and_total_against_recorded_lines():
     assert (total["n"], total["hit_rate"]) == (1, 1.0)     # 47 > 40
 
 
-def test_the_track_record_keeps_reporting_the_rebuilt_count():
-    """PR #1 already reports `n_rebuilt` from the same predicate, and excludes rebuilt rows from
-    `n_resolved` before counting. The plan's `n_backfilled` would be the same number under a
-    second name, so it is not added."""
+def test_the_track_record_counts_the_backfilled_game_and_discloses_it():
+    """Every recorded pick counts (Kevin, 2026-10-01); the pre-kickoff count sits beside it.
+
+    `n_rebuilt` is gone: it meant "resolved rows refused as look-forward", and nothing is
+    refused now. Its replacement is `n_pre_kickoff` -- how many of the counted picks were made
+    before their own kickoff -- with the label carried on each row of `per_pick`. The plan's
+    `n_backfilled` was the same quantity under a second name, so it is still not added."""
     store.record_resolved_game_predictions([_finished()])
     # A genuinely pre-game snapshot, resolved: counted as resolved.
     store.record_game_predictions([_upcoming(game_id="tracked")])
@@ -222,9 +225,11 @@ def test_the_track_record_keeps_reporting_the_rebuilt_count():
 
     games = store.get_track_record()["games"]
 
-    assert games["n_rebuilt"] == 1, games
-    assert games["n_resolved"] == 1, games          # only the tracked one
+    assert games["n_resolved"] == 2, games          # both recorded games count
+    assert games["n_pre_kickoff"] == 1, games       # only the one snapshotted before kickoff
+    assert games["pre_kickoff"]["n_resolved"] == 1, games
     assert "n_backfilled" not in games
+    assert "n_rebuilt" not in games
 
 
 def test_the_bucket_count_keeps_the_hub_gate_under_the_reviewers_bar():
