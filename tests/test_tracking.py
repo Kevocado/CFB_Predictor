@@ -184,6 +184,7 @@ def _prop(game_id="g1", player_id="p1", player_name="Test Player", market="passi
 
 
 def test_track_record_buckets_anytime_td_predictions_by_confidence():
+    store.record_game_predictions([_future_game()])  # props need their game's kickoff time
     store.record_player_prop_predictions([
         _prop(market="anytime_td", predicted_value=0.55, player_id="p1"),
         _prop(market="anytime_td", predicted_value=0.65, player_id="p2"),
@@ -217,6 +218,7 @@ def test_track_record_confidence_buckets_are_empty_when_no_td_predictions_resolv
 
 
 def test_track_record_signed_bias_is_positive_for_consistent_overprediction():
+    store.record_game_predictions([_future_game()])  # props need their game's kickoff time
     store.record_player_prop_predictions([
         _prop(market="carries", predicted_value=25.0, player_id="p1", position="RB"),
         _prop(market="carries", predicted_value=30.0, player_id="p2", position="RB"),
@@ -235,6 +237,7 @@ def test_track_record_signed_bias_is_positive_for_consistent_overprediction():
 
 
 def test_track_record_signed_bias_cancels_where_mae_does_not():
+    store.record_game_predictions([_future_game()])  # props need their game's kickoff time
     store.record_player_prop_predictions([
         _prop(market="receiving_yards", predicted_value=110.0, player_id="p1", position="WR"),
         _prop(market="receiving_yards", predicted_value=90.0, player_id="p2", position="WR"),
@@ -252,6 +255,7 @@ def test_track_record_signed_bias_cancels_where_mae_does_not():
 
 
 def test_track_record_reports_mae_by_position():
+    store.record_game_predictions([_future_game()])  # props need their game's kickoff time
     store.record_player_prop_predictions([
         _prop(market="passing_yards", predicted_value=300.0, player_id="qb1", position="QB"),
         _prop(market="rushing_yards", predicted_value=100.0, player_id="rb1", position="RB"),
@@ -273,6 +277,7 @@ def test_track_record_reports_mae_by_position():
 def test_track_record_handles_prop_predictions_recorded_without_position():
     """Rows recorded before the position column existed carry NULL position;
     the summary must not crash and groups them under "unknown"."""
+    store.record_game_predictions([_future_game()])  # props need their game's kickoff time
     store.record_player_prop_predictions([
         {"game_id": "g1", "player_id": "p1", "player_name": "Old Row",
          "market": "rushing_yards", "predicted_value": 95.0},
@@ -557,3 +562,168 @@ def test_a_genuinely_graded_market_is_still_counted_in_the_aggregate():
     # 50 against a 51.5 line, so the call was wrong. `0.0` is the point -- the row is
     # *counted*, because it is a real graded market, unlike the fabricated ones.
     assert summary["pct_totals_correct"] == 0.0
+
+
+# --- the pre-kickoff guard on the prop path -----------------------------------
+#
+# The games half of this guard already exists here: `get_track_record` applies
+# `_snapshotted_after_kickoff` to `game_predictions` and reports the excluded rows
+# apart under `games.n_rebuilt`, and `get_predictions_for_week` marks them
+# `rebuilt` (test_track_record_leaves_rebuilt_picks_out_of_every_rate).
+#
+# The prop half did not. `_summarize_player_props` counted EVERY resolved row, so
+# `player_props.n_resolved`, `hit_rate_when_called` and `brier_score` -- the props
+# half of the published track record -- were computed partly from picks the model
+# made after the game started. A hit rate built on information the model could not
+# have had is exactly the look-forward bias this product exists to measure against,
+# and NFL_Predictor's `src/nfl_predictor/tracking/store.py` `_summarize_player_props`
+# already refuses those rows and reports them under its own `n_rebuilt`.
+#
+# `player_prop_predictions` carries no `commence_time`, so the guard joins to
+# `game_predictions` on `game_id` (that table's primary key, so the join is
+# many-to-one and safe) and fails closed -- an unparseable timestamp, or a prop row
+# whose game is absent, is treated as rebuilt rather than counted.
+
+
+def _insert_game_row(game_id, commence_time):
+    """Insert a game row directly.
+
+    `record_game_predictions` refuses a game at/after its own kickoff, which is the
+    correct rule for a live tick but makes the post-kickoff case unrepresentable
+    through the public writer. The row still has to exist, because the guard reads
+    kickoff times from this table.
+    """
+    with contextlib.closing(store._connect()) as conn, conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO game_predictions
+                (game_id, home_team, away_team, commence_time, snapshotted_at,
+                 home_win_prob, away_win_prob)
+            VALUES (?, 'H', 'A', ?, '2020-01-01T00:00:00+00:00', 0.5, 0.5)
+            """,
+            (game_id, commence_time),
+        )
+
+
+def _insert_prop_row(game_id, player_id, snapshotted_at, market="rushing_yards",
+                     predicted=85.0, resolved=True, actual=None, position=None):
+    """Insert a prop row directly, so `snapshotted_at` is the test's to choose.
+
+    `record_player_prop_predictions` stamps `snapshotted_at` with `now()`, which can
+    only ever produce a post-kickoff row against a past game. Writing the column is
+    the only way to state the boundary the guard is about.
+    """
+    with contextlib.closing(store._connect()) as conn, conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO player_prop_predictions
+                (game_id, player_id, player_name, market, predicted_value, snapshotted_at,
+                 resolved, actual_value, position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (game_id, player_id, f"Player {player_id}", market, predicted,
+             snapshotted_at, 1 if resolved else 0, actual, position),
+        )
+
+
+def test_prop_track_record_excludes_post_kickoff_picks_from_every_market():
+    """The defect, stated as an assertion.
+
+    Two props resolve against the same yardage market: one snapshotted before its
+    game's kickoff (a real pick, off by 10) and one snapshotted a year after it (a
+    reconstruction, off by 70). The post-kickoff row is exactly the information the
+    model could not have had when the line was live.
+
+    Before the guard: `n_resolved` is 2 and the error is the mean of 10 and 70 --
+    a published accuracy number computed partly from a look-forward row. After it:
+    only the pre-kickoff pick counts, and the excluded row is reported apart under
+    `n_rebuilt` rather than silently dropped.
+    """
+    _insert_game_row("g_pre", "2099-09-04T20:20:00+00:00")
+    _insert_game_row("g_post", "2000-09-04T20:20:00+00:00")
+    _insert_prop_row("g_pre", "p_pre", "2099-09-01T00:00:00+00:00",
+                     predicted=90.0, actual=80.0, position="RB")
+    _insert_prop_row("g_post", "p_post_yards", "2001-01-01T00:00:00+00:00",
+                     predicted=10.0, actual=80.0, position="RB")
+
+    props = store.get_track_record()["player_props"]
+
+    assert props["rushing_yards"]["n_resolved"] == 1, (
+        "a pick snapshotted after kickoff is still in the published record"
+    )
+    # |90-80| = 10. Leaking the post-kickoff row in gives (10 + 70) / 2 = 40.
+    assert props["rushing_yards"]["mean_absolute_error"] == pytest.approx(10.0)
+    assert props["rushing_yards"]["mean_signed_error"] == pytest.approx(10.0)
+    # Reported apart rather than silently dropped, matching games.n_rebuilt.
+    assert props["n_rebuilt"] == 1, (
+        f"the post-kickoff prop row was not reported apart: {props['n_rebuilt']}"
+    )
+
+
+def test_prop_track_record_excludes_post_kickoff_picks_from_brier_and_hit_rate():
+    """The two metrics the reviewer named, and the two a yardage MAE cannot reach.
+
+    `anytime_td` is scored, not yardage: `hit_rate_when_called` and `brier_score`
+    are the numbers a reader is most likely to quote. A post-kickoff anytime-TD row
+    is planted alongside a pre-kickoff one that scored, and both must be excluded
+    from the scoring pair while still being counted in `n_rebuilt` -- a guard that
+    filtered only the yardage family, or only `n_resolved`, would leave these wrong.
+    """
+    _insert_game_row("g_pre", "2099-09-04T20:20:00+00:00")
+    _insert_game_row("g_post", "2000-09-04T20:20:00+00:00")
+    _insert_prop_row("g_pre", "td_pre", "2099-09-01T00:00:00+00:00",
+                     market="anytime_td", predicted=0.8, actual=1.0)
+    _insert_prop_row("g_post", "td_post", "2001-01-01T00:00:00+00:00",
+                     market="anytime_td", predicted=0.9, actual=0.0)
+
+    props = store.get_track_record()["player_props"]
+
+    assert props["anytime_td"]["n_resolved"] == 1
+    assert props["anytime_td"]["n_called"] == 1
+    # Only the pre-kickoff row, which was called at 0.8 and scored: 1.0.
+    # Counting the post-kickoff miss as well gives 0.5.
+    assert props["anytime_td"]["hit_rate_when_called"] == pytest.approx(1.0)
+    # (0.8 - 1.0)^2 = 0.04. With the post-kickoff row the mean is
+    # (0.04 + 0.81) / 2 = 0.425 -- a materially different published calibration.
+    assert props["anytime_td"]["brier_score"] == pytest.approx(0.04)
+    # The confidence buckets are built from the same filtered frame, so they move too.
+    assert sum(b["n"] for b in props["anytime_td"]["confidence_buckets"]) == 1
+    assert props["n_rebuilt"] == 1
+
+
+def test_prop_track_record_excludes_a_pick_snapshotted_exactly_at_kickoff():
+    """The boundary is the games path's `>=`, pinned so it cannot drift.
+
+    A row stamped at the instant of kickoff is a reconstruction, not a pick; one
+    stamped a second earlier is a pick. A test that only asserted "some post-kickoff
+    row is excluded" would pass against an off-by-one guard in either direction.
+    """
+    _insert_game_row("g_boundary", "2099-09-04T20:20:00+00:00")
+    _insert_prop_row("g_boundary", "p_at", "2099-09-04T20:20:00+00:00", actual=80.0)
+    _insert_prop_row("g_boundary", "p_before", "2099-09-04T20:19:59+00:00", actual=80.0)
+
+    props = store.get_track_record()["player_props"]
+
+    assert props["rushing_yards"]["n_resolved"] == 1
+    assert props["n_rebuilt"] == 1
+
+
+def test_prop_track_record_fails_closed_when_the_kickoff_time_cannot_be_read():
+    """Same rule as `test_an_unreadable_snapshot_time_counts_as_rebuilt`.
+
+    When the timing cannot be proven, the honest default is "after kickoff": an
+    unparseable `snapshotted_at`, and a prop row whose game never reached
+    `game_predictions` (so there is no kickoff time to compare against at all).
+    Both are excluded rather than counted on the strength of a timestamp alone.
+    """
+    _insert_game_row("g_bad", "2099-09-04T20:20:00+00:00")
+    _insert_prop_row("g_bad", "p_bad_time", "not a time", actual=80.0)
+    _insert_prop_row("g_orphan", "p_orphan", "2020-01-01T00:00:00+00:00", actual=80.0)
+
+    props = store.get_track_record()["player_props"]
+
+    assert props["rushing_yards"]["n_resolved"] == 0
+    assert props["rushing_yards"]["mean_absolute_error"] is None
+    assert props["n_rebuilt"] == 2, (
+        "a prop row that cannot be proven pre-kickoff was counted as a pick"
+    )
