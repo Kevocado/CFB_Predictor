@@ -522,7 +522,32 @@ def _td_confidence_buckets(anytime_td: pd.DataFrame) -> list[dict]:
 
 
 def _summarize_player_props(resolved: pd.DataFrame) -> dict:
+    """Per-market metrics over graded props. Post-kickoff rows are excluded from
+    every market's metrics and reported apart under `n_rebuilt` -- the same rule the
+    games path applies in `get_track_record`, and the same rule
+    NFL_Predictor's `_summarize_player_props` applies. A prop row snapshotted at or
+    after its game's kickoff is a reconstruction, not a pick: counting it toward
+    `n_resolved`, `hit_rate_when_called` or `brier_score` publishes an accuracy
+    figure computed partly from information the model could not have had.
+
+    The prop table carries no `commence_time`, so it is joined to `game_predictions`
+    on `game_id` (that table's primary key, so the join is many-to-one and safe). A
+    row whose game is absent, or whose timestamp cannot be parsed, fails closed and
+    is excluded -- the same default as the games path.
+    """
     result: dict[str, dict] = {}
+
+    if not resolved.empty:
+        with contextlib.closing(_connect()) as conn:
+            kickoff_times = pd.read_sql("SELECT game_id, commence_time FROM game_predictions", conn)
+        resolved = resolved.merge(kickoff_times, on="game_id", how="left")
+        rebuilt = resolved.apply(
+            lambda r: _snapshotted_after_kickoff(r["snapshotted_at"], r["commence_time"]), axis=1
+        ).astype(bool)
+        n_rebuilt = int(rebuilt.sum())
+        resolved = resolved[~rebuilt]
+    else:
+        n_rebuilt = 0
 
     anytime_td = resolved[resolved["market"] == "anytime_td"]
     if anytime_td.empty:
@@ -560,7 +585,11 @@ def _summarize_player_props(resolved: pd.DataFrame) -> dict:
                     for position, group in by_position
                 },
             }
-    return result
+    # `n_rebuilt` sits alongside the per-market keys, matching the games path's
+    # `games.n_rebuilt` and NFL's props payload. It is the count of resolved rows
+    # refused as look-forward, so a reader can see that the record is short by
+    # exactly this many picks rather than wondering why.
+    return {**result, "n_rebuilt": n_rebuilt}
 
 
 def get_game_verdict(game_id: str) -> dict | None:
