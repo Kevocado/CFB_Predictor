@@ -95,29 +95,46 @@ def current_season_and_week() -> tuple[int, int]:
     opening week doesn't start exactly then (confirmed live: it was a full
     week ahead of the real current week).
 
-    **The week advances on the SUNDAY that closes it**, not on the weekday
-    week 1 happened to kick off. Measuring `((today - anchor).days // 7)` put
-    the rollover on that kickoff weekday, and week 1 kicks off on a Friday --
-    so the site moved to the next gameweek on Friday night, while Saturday's
-    games were still unplayed. CFB plays Thursday/Friday/Saturday, so Sunday
-    is the first day on which no game of the closing week remains, and it is
-    the only weekday at which advancing cannot strand a part-played week.
+    **The week is derived from the schedule, not from 7-day arithmetic.**
+    Measuring `((today - anchor).days // 7) + 1` put the rollover on whatever
+    weekday week 1 happened to kick off -- a Friday -- so the whole site moved
+    to the next gameweek on Friday night with Saturday's games still unplayed.
+
+    The obvious repair, rolling over on Sunday, is also wrong, and the schedule
+    says so: measured from the committed snapshot, **week 1 has games on Thu,
+    Fri, Sat, Sun AND Mon**, and week 6 has a Wednesday. A Sunday rollover would
+    hide week 1's Monday game for two days -- the same defect, two days later.
+
+    So the rule is: **the current week is the first week whose last scheduled
+    game has not yet been played.** Friday and Saturday stay in the week whose
+    Monday game is still ahead; the week turns over once that game is behind us,
+    and a week whose games are all in the past advances to the next one. No
+    scheduled game is ever off the board, which is the only property that
+    actually matters here.
     """
     today = date.today()
     season = today.year if today.month >= 2 else today.year - 1
+    week = None
     try:
         schedule = games_data.fetch_schedules([season])
-        week1_start = schedule.loc[schedule["week"] == 1, "gameday"].min()
-        anchor = week1_start.date() if pd.notna(week1_start) else date(season, 8, 20)
+        gamedays = pd.DataFrame(
+            {"week": schedule["week"], "gameday": pd.to_datetime(schedule["gameday"], errors="coerce")}
+        ).dropna()
+        last_by_week = gamedays.groupby("week")["gameday"].max().sort_index()
+        remaining = [int(w) for w, gd in last_by_week.items() if gd.date() >= today]
+        if last_by_week.empty:
+            raise ValueError("schedule carried no usable gamedays")
+        # Past the final week of the season, roll to the one after it rather
+        # than clamping to the last week with games, which would go stale.
+        week = remaining[0] if remaining else int(last_by_week.index[-1]) + 1
     except Exception:
+        # No schedule (cold cache, network, a fetch that raises). Fall back to
+        # Sunday-anchored arithmetic: worse than the schedule-derived rule
+        # because it cannot see a Monday or Wednesday game, but it still refuses
+        # to advance mid-week, which the old 7-day-from-anchor form did.
         anchor = date(season, 8, 20)
-    # The first Sunday on or after `anchor` closes week 1. Before it the week is
-    # still 1; on it, and every 7 days after, it has advanced. Testing against
-    # `first_close` rather than `anchor` is what moves the boundary off the
-    # kickoff weekday, and comparing with `>=` rather than `>` is what makes
-    # Sunday the first day of the new week rather than the last of the old one.
-    first_close = anchor + timedelta(days=(6 - anchor.weekday()) % 7)
-    week = 1 + (today - first_close).days // 7 + (1 if today >= first_close else 0)
+        first_close = anchor + timedelta(days=(6 - anchor.weekday()) % 7)
+        week = 1 + (today - first_close).days // 7 + (1 if today >= first_close else 0)
     return season, max(1, min(20, week))
 
 
