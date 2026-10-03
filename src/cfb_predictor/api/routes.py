@@ -93,7 +93,16 @@ def current_season_and_week() -> tuple[int, int]:
     kickoff date rather than a hardcoded month/day guess. A fixed
     `date(season, 8, 20)` anchor drifts every year the season's actual
     opening week doesn't start exactly then (confirmed live: it was a full
-    week ahead of the real current week)."""
+    week ahead of the real current week).
+
+    **The week advances on the SUNDAY that closes it**, not on the weekday
+    week 1 happened to kick off. Measuring `((today - anchor).days // 7)` put
+    the rollover on that kickoff weekday, and week 1 kicks off on a Friday --
+    so the site moved to the next gameweek on Friday night, while Saturday's
+    games were still unplayed. CFB plays Thursday/Friday/Saturday, so Sunday
+    is the first day on which no game of the closing week remains, and it is
+    the only weekday at which advancing cannot strand a part-played week.
+    """
     today = date.today()
     season = today.year if today.month >= 2 else today.year - 1
     try:
@@ -102,8 +111,14 @@ def current_season_and_week() -> tuple[int, int]:
         anchor = week1_start.date() if pd.notna(week1_start) else date(season, 8, 20)
     except Exception:
         anchor = date(season, 8, 20)
-    week = max(1, min(20, ((today - anchor).days // 7) + 1))
-    return season, week
+    # The first Sunday on or after `anchor` closes week 1. Before it the week is
+    # still 1; on it, and every 7 days after, it has advanced. Testing against
+    # `first_close` rather than `anchor` is what moves the boundary off the
+    # kickoff weekday, and comparing with `>=` rather than `>` is what makes
+    # Sunday the first day of the new week rather than the last of the old one.
+    first_close = anchor + timedelta(days=(6 - anchor.weekday()) % 7)
+    week = 1 + (today - first_close).days // 7 + (1 if today >= first_close else 0)
+    return season, max(1, min(20, week))
 
 
 @router.get("/current-week")
