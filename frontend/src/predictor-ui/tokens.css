@@ -1,0 +1,161 @@
+/* Synced from predictor-ui@490df2925aaf. Do not edit here: change predictor-hub/packages/predictor-ui and re-run scripts/sync-ui.mjs. */
+/* Predictor family tokens. Synced into each site; import in this order:
+     @import "./predictor-ui/fonts.css";
+     @import "tailwindcss";
+     @import "./predictor-ui/tokens.css";
+   A site sets data-sport on its root (AppFrame does this) to pick its accent.
+   Contrast is enforced by tokens.test.ts; change a hex, run the tests. */
+
+@theme {
+  --font-pr-display: "Barlow Condensed", "Arial Narrow", ui-sans-serif, sans-serif;
+  --font-pr-body: "Barlow", ui-sans-serif, system-ui, sans-serif;
+
+  /* Flat pit-lane stage: phones at kickoff, evenings, next to a TV. */
+  --color-pr-stage: #0b0d10;
+  --color-pr-panel: #151920;
+  --color-pr-panel-2: #1d232c;
+  --color-pr-rule: #2b333f;
+  --color-pr-text: #f3f5f8;
+  --color-pr-text-dim: #b4bdca;
+  --color-pr-text-faint: #909aa8;
+
+  /* A FILL tone only, and the last rung below the text scale. The split bar
+     paints its non-pick segments in a neutral ramp, and a three-way bar needs
+     three steps of it; the accent is spoken for (it means "this is the pick"),
+     text-dim and text-faint are the top two, and this is the third.
+     Deliberately NOT a text colour: it sits below the 4.5:1 bar, so the name
+     says what it paints. `--color-pr-text` cannot serve instead — a near-white
+     segment beside two greys reads as a highlight, which is the claim this tone
+     exists to avoid — and `--color-pr-rule` / `--color-pr-panel-2` are under the
+     1.6:1 fill floor (1.4:1 and 1.1:1 on the panel). */
+  --color-pr-fill-mute: #5e6775;
+
+  /* Status, always paired with words (Called it / Missed / Leans). */
+  --color-pr-win: #3ddc84;
+  --color-pr-loss: #ff6b6b;
+  --color-pr-lean: #ffc53d;
+
+  /* Default accent (the Hub); each sport overrides below. */
+  --color-pr-accent: #f3f5f8;
+  --color-pr-accent-ink: #0b0d10;
+
+  --radius-pr: 6px;
+}
+
+[data-sport="pl"] {
+  --color-pr-accent: #ff2d78;
+  --color-pr-accent-ink: #0b0d10;
+}
+[data-sport="f1"] {
+  --color-pr-accent: #ff4436;
+  --color-pr-accent-ink: #0b0d10;
+}
+[data-sport="nfl"] {
+  --color-pr-accent: #4c8dff;
+  --color-pr-accent-ink: #0b0d10;
+}
+[data-sport="cfb"] {
+  --color-pr-accent: #f5b301;
+  --color-pr-accent-ink: #0b0d10;
+}
+[data-sport="nba"] {
+  --color-pr-accent: #ff7a1a;
+  --color-pr-accent-ink: #0b0d10;
+}
+[data-sport="hub"] {
+  --color-pr-accent: #f3f5f8;
+  --color-pr-accent-ink: #0b0d10;
+}
+
+@layer base {
+  [data-sport] {
+    color-scheme: dark;
+    background: var(--color-pr-stage);
+    color: var(--color-pr-text);
+    font-family: var(--font-pr-body);
+    font-variant-numeric: tabular-nums;
+    /* The caret, in the sport's accent. `color-scheme: dark` already made the
+       default caret visible, so this is not a fix for an invisible caret — it is
+       the same decision the selection highlight below already makes, applied to
+       the one text cursor the family never drew.
+       It belongs HERE and not with the scrollbar because `caret-color`
+       inherits: an input inside the sport subtree picks it up. */
+    caret-color: var(--color-pr-accent);
+  }
+  [data-sport] ::selection {
+    background: var(--color-pr-accent);
+    color: var(--color-pr-accent-ink);
+  }
+  [data-sport] :focus-visible {
+    outline: 2px solid var(--color-pr-accent);
+    outline-offset: 2px;
+  }
+
+  /* The scrollbar, at DOCUMENT scope, and not under [data-sport].
+     AppFrame renders `<div data-sport={sport}>`, so the scrolling element on
+     every site is the document, which sits outside the sport subtree.
+     `scrollbar-color` and `scrollbar-width` do not inherit, and
+     `::-webkit-scrollbar` written as a descendant only reaches descendants — so
+     scoping these to the sport themes a scrollbar nobody sees and leaves the
+     real one on the system default. Measured in a browser: with them under the
+     sport element, `getComputedStyle(document.documentElement).scrollbarColor`
+     read `auto` while the same property one level down read the right colours.
+     The shared neutral tokens are used precisely because no sport changes them;
+     nothing per-sport is lost. */
+
+  /* Standard pair: Firefox, and Chrome 121+. */
+  :root {
+    scrollbar-color: var(--color-pr-text-faint) var(--color-pr-stage);
+    scrollbar-width: thin;
+  }
+
+  /* The pseudo-elements, for the engines that only speak them. NOT redundant
+     with the pair above: Safari implements `::-webkit-scrollbar` and not
+     `scrollbar-color`, and Safari is where these sites are read. Where both
+     apply the pseudo-elements win, so the two have to agree — and they do.
+
+     There were 20 scroll containers across the four sites (Sports 6, PL 14) and
+     before this there was no scrollbar rule anywhere in the family, so every one
+     of them was drawing an operating-system scrollbar on a near-black stage.
+
+     The thumb is `--color-pr-text-faint` (6.83:1 on the stage) and not
+     `--color-pr-rule`, which is the token that looks right by name and measures
+     1.53:1 — under the 3:1 WCAG 1.4.11 bar for a non-text UI part. A scrollbar
+     you cannot see is worse than an untamed one, and nothing else in the build
+     would have caught it. The test asserts the ratio, not the name, so a subtler
+     token choice later fails there rather than in someone's hands. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-pr-stage);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-pr-text-faint);
+    border-radius: 999px;
+    /* A 10px thumb flush to the edge reads as a solid bar rather than a
+       control. The transparent border and the content-box clip inset it without
+       narrowing the track, which is the whole reason to do it this way. */
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-pr-text-dim);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: var(--color-pr-stage);
+  }
+}
+
+/* The family mark: one notched corner, like a broadcast graphic. Hero and
+   match cards only. */
+.pr-notch {
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+}
+/* clip-path hides anything drawn outside the box, including the default
+   outside focus outline, so the notched card draws its focus ring inside. */
+.pr-notch:focus-visible {
+  outline-offset: -3px;
+}

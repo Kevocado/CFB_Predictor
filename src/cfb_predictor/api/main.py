@@ -15,6 +15,7 @@ from fastapi.responses import PlainTextResponse
 
 from ..config import PUBLIC_MODE, PUBLIC_SNAPSHOT_POLL_SECONDS, TRACKING_DB_BACKUP_PATH, TRACKING_DB_PATH
 from .facts import router as facts_router
+from .signals import router as signals_router
 from .routes import (
     current_season_and_week,
     refresh_public_snapshot_from_remote,
@@ -132,6 +133,16 @@ app.include_router(router)
 # router carries no /api prefix. /facts/upcoming is declared before
 # /facts/{game_id} inside facts.py so it isn't swallowed by the path parameter.
 app.include_router(facts_router)
+
+# GET /api/signals/{game_id} — spec §3's per-fixture signal payloads, rendered by
+# the shared `SignalRows` under the facts block. This one DOES carry the /api
+# prefix, unlike `facts_router` above: the explainer service is what calls
+# `/facts/{id}`, and it addresses the API root, whereas this endpoint is read by
+# this site's own frontend, which reaches the backend through `/api` in both
+# production (`client.ts`'s `BASE_URL`) and development (`vite.config.ts`
+# proxies only '/api'). F1 shipped this router mounted at the root and the page
+# could not call it; the tests here pin the prefix.
+app.include_router(signals_router)
 
 
 @app.get("/")
