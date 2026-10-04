@@ -23,6 +23,7 @@ from fastapi.encoders import jsonable_encoder
 
 from . import config
 from .api import routes
+from .models import manifest
 from .models import player_props
 
 # How many weeks past the current one get freshly rebuilt every run.
@@ -305,7 +306,32 @@ def build_snapshot(previous: dict | None = None) -> dict:
     }
 
 
+def _verify_models_current() -> None:
+    """Raise unless the committed models match the code about to publish them.
+
+    A published snapshot is a promise that every number in it came from the
+    code in this repo. Nothing at write time used to check that: `build_snapshot`
+    swallows per-week exceptions (`! skipped prediction for ...`) and reuses
+    previously-published weeks wholesale, so a build against stale models
+    produces a full, well-formed, wrong file. The site then serves the old
+    label's numbers exactly as NFL's did.
+
+    Deliberately in the writing code and not in the workflow YAML. The
+    refresh-public-snapshot workflow can be dispatched by hand, and the deploy
+    workflow can run from a different ref, so a YAML-only check is bypassed by
+    exactly the runs nobody re-reads.
+
+    It calls the same `_verify_artifact_fingerprint` that `load_models` calls,
+    rather than `load_models` itself: the check is the point, and calling it
+    directly means no pickle is unpickled to decide whether the snapshot may be
+    written. Sharing the one function means the snapshot cannot be published
+    from a model the API would have rejected.
+    """
+    manifest._verify_artifact_fingerprint(manifest.load_manifest())
+
+
 def main() -> None:
+    _verify_models_current()
     previous = json.loads(config.PUBLIC_SNAPSHOT_PATH.read_text()) if config.PUBLIC_SNAPSHOT_PATH.exists() else None
     snapshot = jsonable_encoder(build_snapshot(previous))
     config.PUBLIC_SNAPSHOT_PATH.write_text(json.dumps(snapshot, indent=2))

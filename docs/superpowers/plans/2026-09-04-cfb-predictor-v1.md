@@ -1400,6 +1400,17 @@ git commit -m "feat: rolling form and rest days features"
 
 ## Task 7: Features — player usage
 
+> **Superseded 2026-10-04.** This plan's `anytime_td` derivation of
+> `rushing_tds + receiving_tds + passing_tds > 0` is no longer what the code
+> does. The definition is now `rushing_tds + receiving_tds > 0` — passing TDs
+> were excluded so that a quarterback's anytime-TD is a rushing-or-receiving
+> score rather than one driven by his arm, matching `nfl_predictor`'s v2 label
+> so the same name means one thing on both sites. CFB has no QB passing-TD model
+> line, so nothing is lost by dropping it here. The steps below are left as
+> written because this is the historical v1 plan; the authoritative definition
+> is `features/player_usage.py::anytime_td_actual`, which the classifier's label
+> and the tracker's grader both call.
+
 **Files:**
 - Create: `src/cfb_predictor/features/player_usage.py`
 - Test: `tests/test_player_usage.py`

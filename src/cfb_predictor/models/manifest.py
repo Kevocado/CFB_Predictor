@@ -127,9 +127,120 @@ def train_all(seasons: list[int] | None = None) -> dict:
         "sigma": sigma,
         "total_sigma": total_sigma,
         "yardage_metrics": yardage_metrics,
+        "artifact_fingerprint": artifact_fingerprint(player_feature_cols),
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
     return manifest
+
+
+def artifact_fingerprint(player_feature_cols) -> dict:
+    """What these committed pickles were fitted AGAINST, in a form the code can
+    check itself against at load time.
+
+    Two keys, and both are about meaning rather than shape:
+
+    * `player_feature_cols` -- the exact list `train_all` fitted the player
+      models on. Checked as an exact list, not a subset: a subset test cannot
+      see an artefact that is missing a feature.
+    * `anytime_td_label_version` from `player_usage`. Bump the version whenever
+      the `anytime_td` definition changes and every artefact fitted before that
+      bump stops loading loudly instead of quietly.
+
+    The silent-degradation case this exists to close is measured, not
+    hypothetical: on the artefact this branch started from,
+    `models/manifest.json` listed 5 `player_feature_cols` while the code had 6
+    (the 6th, `receptions_roll`, had been added to `ROLL_STATS` without a
+    retrain), and `anytime_td_model.pkl` was fitted on 5. `load_models()`
+    returned that payload without complaint and every anytime-TD prediction came
+    out of a model that no longer matched the code.
+
+    A subset check would have missed that, because the stale 5 columns ARE a
+    subset of the 6 servable ones. The label half is the second reason: the
+    label is never recomputed at serving -- `predict_props` scores the committed
+    pickle from features alone -- so an artefact fitted against the OLD
+    `anytime_td` definition serves exactly like one fitted against the new one.
+    Right shape, wrong meaning, no error anywhere.
+    """
+    return {
+        "player_feature_cols": list(player_feature_cols),
+        "anytime_td_label_version": player_usage.ANYTIME_TD_LABEL_VERSION,
+    }
+
+
+def _verify_artifact_fingerprint(manifest: dict) -> None:
+    """Raise when the committed artefacts disagree with the code they serve under.
+
+    Called from `load_models`. A manifest written before this check existed has
+    no `artifact_fingerprint` key at all, and that is treated as a FAILURE, not
+    a pass -- the absence of a fingerprint is exactly the state this is
+    detecting, so skipping the check when it is missing would defeat it.
+
+    **Both halves are compared against the CODE, never against the manifest.**
+    A check whose expectation comes from the artefact it is inspecting cannot
+    detect that artefact drifting: NFL's first version of this built its
+    expectation from `manifest["player_feature_cols"]`, so the manifest was
+    compared with itself and passed for exactly the stale artefact it exists to
+    catch. `player_usage.PLAYER_FEATURE_COLUMNS` is the authority instead,
+    because it is the one thing training and serving both derive from:
+    `train_all` fits the player models on the list `build_player_training_frame`
+    returns (that constant), and `predict_props` reindexes a live row by
+    `manifest["player_feature_cols"]`, which the check below pins to it.
+    """
+    recorded = manifest.get("artifact_fingerprint")
+    if recorded is None:
+        raise ValueError(
+            f"{MANIFEST_PATH} has no 'artifact_fingerprint' key, so the committed "
+            "models cannot be verified against the code that serves them. It was "
+            "written before fingerprinting existed, and an unverified artefact is "
+            "the case this check exists to catch. Re-run training "
+            "(`python -m cfb_predictor.models.manifest`) to write one."
+        )
+
+    # The code's own fingerprint. Nothing here is read out of the manifest.
+    current = artifact_fingerprint(player_usage.PLAYER_FEATURE_COLUMNS)
+    expected_features = current["player_feature_cols"]
+    fitted_features = list(recorded.get("player_feature_cols") or [])
+    if fitted_features != expected_features:
+        raise ValueError(
+            f"{MANIFEST_PATH} records models fitted on {fitted_features} but the "
+            f"code's player features are now {expected_features} "
+            f"({player_usage.__name__}.PLAYER_FEATURE_COLUMNS). The committed "
+            "pickles were fitted on a different feature set, so every prediction "
+            "would come from a stale model. Re-run training "
+            "(`python -m cfb_predictor.models.manifest`)."
+        )
+
+    # The fingerprint and the manifest's own `player_feature_cols` are written
+    # from one value at fit time, so they must still agree -- and this is not
+    # belt-and-braces. `load_models` hands `player_models["feature_cols"]` to
+    # `player_props.predict_props`, which reindexes every live row by the
+    # manifest's list, not the fingerprint's. A manifest whose top-level list had
+    # drifted would score a 6-column model on a narrower feature set while the
+    # check above stayed green: the same silent degradation from the other side.
+    manifest_features = list(manifest.get("player_feature_cols") or [])
+    if manifest_features != fitted_features:
+        raise ValueError(
+            f"{MANIFEST_PATH} records an artefact fingerprint fitted on "
+            f"{fitted_features} but its own 'player_feature_cols' is "
+            f"{manifest_features}. Serving reindexes every player row by the "
+            "manifest's list, so the two disagreeing means the models would be "
+            "scored on features they were not fitted on. Re-run training "
+            "(`python -m cfb_predictor.models.manifest`)."
+        )
+
+    expected_version = current["anytime_td_label_version"]
+    fitted_version = recorded.get("anytime_td_label_version")
+    if fitted_version != expected_version:
+        raise ValueError(
+            f"{MANIFEST_PATH} records the anytime-TD model fitted against label "
+            f"definition v{fitted_version}, but the code now defines "
+            f"v{expected_version} ({player_usage.__name__}.ANYTIME_TD_LABEL_VERSION). "
+            "The committed model predicts a different market than the one being "
+            "graded: `anytime_td` is now rushing + receiving TDs only, excluding "
+            "passing TDs. Serving it would score every prediction against a "
+            "definition it was never fitted on. Re-run training "
+            "(`python -m cfb_predictor.models.manifest`)."
+        )
 
 
 def load_manifest() -> dict:
@@ -145,6 +256,9 @@ def model_version(manifest: dict) -> str:
 
 def load_models() -> dict:
     manifest = load_manifest()
+    # Before the unpickles: an artefact that cannot be verified must not reach
+    # the point of being loaded, let alone scored against.
+    _verify_artifact_fingerprint(manifest)
     player_models = {
         "feature_cols": manifest["player_feature_cols"],
         "anytime_td": _load_pickle(_artifact_path(ANYTIME_TD_MODEL_FILENAME)),
