@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-09-05T19:08:40.988453+00:00",
+  "trained_at": "2026-10-04T06:43:26.069782+00:00",
   "seasons": [
     2018,
     2019,
@@ -28,25 +28,43 @@
     "rushing_yards_roll",
     "receiving_yards_roll",
     "targets_roll",
-    "carries_roll"
+    "carries_roll",
+    "receptions_roll"
   ],
   "chosen_candidate": "ridge",
   "candidate_scores": {
-    "elo": 0.5950373215005739,
-    "ridge": 0.5656341110573744,
-    "xgb": 0.5723095674917473
+    "elo": 0.5942636995105854,
+    "ridge": 0.564991235456919,
+    "xgb": 0.5696314331536212
   },
-  "sigma": 16.98585958519707,
-  "total_sigma": 15.998238941965075,
+  "sigma": 16.975533499014745,
+  "total_sigma": 16.026454308078534,
   "yardage_metrics": {
     "passing_yards": {
-      "n_train": 25346
+      "n_train": 25352
     },
     "rushing_yards": {
-      "n_train": 80797
+      "n_train": 80682
     },
     "receiving_yards": {
-      "n_train": 122724
+      "n_train": 122717
+    },
+    "carries": {
+      "n_train": 93230
+    },
+    "receptions": {
+      "n_train": 126987
     }
+  },
+  "artifact_fingerprint": {
+    "player_feature_cols": [
+      "passing_yards_roll",
+      "rushing_yards_roll",
+      "receiving_yards_roll",
+      "targets_roll",
+      "carries_roll",
+      "receptions_roll"
+    ],
+    "anytime_td_label_version": 2
   }
 }

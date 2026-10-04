@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from ..config import TRACKING_DB_PATH
+from ..features import player_usage
 
 
 def _connect() -> sqlite3.Connection:
@@ -839,7 +840,10 @@ _MARKET_TO_STAT_COLUMN = {
 
 # Every market except anytime_td resolves against a stat column -- these are
 # the "yardage-style" markets in the track-record summary. Derived from
-# _MARKET_TO_STAT_COLUMN so adding a market only ever needs one edit.
+# _MARKET_TO_STAT_COLUMN so adding a market only ever needs one edit. anytime_td
+# is `None` here BECAUSE it is not a stat column: it is a boolean over two of
+# them, so it resolves through player_usage.anytime_td_actual below rather than
+# by picking one column out of the row.
 _YARDAGE_MARKETS = tuple(market for market, col in _MARKET_TO_STAT_COLUMN.items() if col is not None)
 
 
@@ -855,11 +859,14 @@ def reconcile_player_prop_predictions(player_stats_df: pd.DataFrame) -> int:
         resolved_count = 0
         for _, row in merged.iterrows():
             if row["market"] == "anytime_td":
-                actual = float(
-                    (row.get("rushing_tds", 0) or 0)
-                    + (row.get("receiving_tds", 0) or 0)
-                    + (row.get("passing_tds", 0) or 0)
-                    > 0
+                # Not `(rushing + receiving + passing) > 0` written out again:
+                # this used to be an inline copy of the sum and it is the
+                # reason NFL's PR #26 had to chase a second implementation in
+                # two repos. `anytime_td_actual` is the one definition, and
+                # this grader scores the market exactly as the classifier was
+                # fitted on it.
+                actual = player_usage.anytime_td_actual(
+                    row.get("rushing_tds"), row.get("receiving_tds")
                 )
             else:
                 stat_col = _MARKET_TO_STAT_COLUMN[row["market"]]

@@ -247,6 +247,16 @@ def _signature() -> frozenset[str]:
     return ps._position_invariant_keys([_row(p) for p in player_props.POSITION_MARKETS])
 
 
+#: Pinned so a synthetic `previous` snapshot can claim to come from the
+#: same models as the code under test. `build_snapshot` rebuilds every
+#: week when the previous snapshot's model_version does not match, which
+#: is the correct production behaviour (a snapshot with no recorded
+#: version cannot be proven current) and would otherwise make every
+#: reuse test here rebuild all three weeks.
+_MODEL_VERSION = "ridge@2000-01-01T00:00:00+00:00"
+
+
+
 def _pin_window(monkeypatch, *, current_week: int = 3, max_week: int = 3) -> None:
     """Pin the rebuild window to a single week, so a test states which weeks are
     reused rather than depending on the default -1/+3."""
@@ -254,6 +264,7 @@ def _pin_window(monkeypatch, *, current_week: int = 3, max_week: int = 3) -> Non
     monkeypatch.setattr(ps, "REBUILD_WEEKS_BEHIND", 0)
     monkeypatch.setattr(ps, "REBUILD_WEEKS_AHEAD", 0)
     monkeypatch.setattr(ps.routes, "current_season_and_week", lambda: (2026, current_week))
+    monkeypatch.setattr(ps.manifest, "model_version", lambda manifest: _MODEL_VERSION)
 
 
 class TestMismatchDetection:
@@ -323,6 +334,7 @@ class TestMismatchDetection:
         whatever the rebuild window happened to produce."""
         previous = {
             "season": 2026,
+            "model_version": _MODEL_VERSION,
             "weeks": {
                 "1": _week(_row("WR"), _row("WR"), _row("WR")),  # reused, current
                 "2": _week(NEW_ROW),                                 # reused, current
@@ -484,6 +496,7 @@ class TestBuildSnapshotReconciles:
     def test_a_stale_reused_week_is_rebuilt_and_a_current_one_is_not(self, monkeypatch):
         previous = {
             "season": 2026,
+            "model_version": _MODEL_VERSION,
             "weeks": {
                 "1": _week(OLD_ROW),      # reused, stale -> should rebuild
                 "2": _week(NEW_ROW),      # reused, current -> should survive untouched
@@ -503,6 +516,7 @@ class TestBuildSnapshotReconciles:
         monkeypatch.setattr(ps, "REBUILD_WEEKS_BEHIND", 0)
         monkeypatch.setattr(ps, "REBUILD_WEEKS_AHEAD", 0)
         monkeypatch.setattr(ps.routes, "current_season_and_week", lambda: (2026, 3))
+        monkeypatch.setattr(ps.manifest, "model_version", lambda manifest: _MODEL_VERSION)
         monkeypatch.setattr(ps.routes, "_get_standings_live", lambda season: [])
 
         result: dict[str, Any] = ps.build_snapshot(previous)
@@ -516,6 +530,7 @@ class TestBuildSnapshotReconciles:
     def test_an_undeterminable_shape_skips_reconciliation_rather_than_guessing(self, monkeypatch):
         previous = {
             "season": 2026,
+            "model_version": _MODEL_VERSION,
             "weeks": {"1": _week(OLD_ROW), "2": _week(OLD_ROW), "3": _week(OLD_ROW)},
         }
 
@@ -527,6 +542,7 @@ class TestBuildSnapshotReconciles:
         monkeypatch.setattr(ps, "REBUILD_WEEKS_BEHIND", 0)
         monkeypatch.setattr(ps, "REBUILD_WEEKS_AHEAD", 0)
         monkeypatch.setattr(ps.routes, "current_season_and_week", lambda: (2026, 3))
+        monkeypatch.setattr(ps.manifest, "model_version", lambda manifest: _MODEL_VERSION)
         monkeypatch.setattr(ps.routes, "_get_standings_live", lambda season: [])
 
         def boom(season, week):
@@ -546,6 +562,7 @@ class TestBuildSnapshotReconciles:
         # stayed stale for the life of the snapshot.
         previous = {
             "season": 2026,
+            "model_version": _MODEL_VERSION,
             "weeks": {
                 "1": _week(_row("QB"), _row("WR", current=False)),  # reused, row 1 stale
                 "2": _week(NEW_ROW),                                  # reused, current
@@ -574,6 +591,7 @@ class TestBuildSnapshotReconciles:
         # `test_a_single_position_sample_reaches_build_snapshot_and_still_stays_out`.
         previous = {
             "season": 2026,
+            "model_version": _MODEL_VERSION,
             "weeks": {
                 "1": _week(_row(row_zero), _row("QB"), _row("RB"), _row("WR")),  # current throughout
                 "2": _week(NEW_ROW),

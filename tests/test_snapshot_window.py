@@ -133,10 +133,22 @@ def test_model_version_combines_candidate_and_training_time():
 
 
 def test_load_models_exposes_the_version(monkeypatch):
+    """The fingerprint is required for the load to get this far, so this
+    stand-in manifest has to carry one that matches the code -- otherwise it
+    would be asserting `model_version` against a load that now correctly
+    refuses. `player_feature_cols` must be the code's real list for the same
+    reason; the feature values themselves are never used here."""
+    from cfb_predictor.features import player_usage
+
     monkeypatch.setattr(manifest, "load_manifest", lambda: {
         "chosen_candidate": "ridge", "trained_at": "2026-08-20T10:00:00+00:00", "sigma": 16.0,
-        "total_sigma": 14.0, "feature_cols": ["rating_diff"], "player_feature_cols": ["p"],
+        "total_sigma": 14.0, "feature_cols": ["rating_diff"],
+        "player_feature_cols": list(player_usage.PLAYER_FEATURE_COLUMNS),
         "yardage_metrics": [],
+        "artifact_fingerprint": {
+            "player_feature_cols": list(player_usage.PLAYER_FEATURE_COLUMNS),
+            "anytime_td_label_version": player_usage.ANYTIME_TD_LABEL_VERSION,
+        },
     })
     monkeypatch.setattr(manifest, "_load_pickle", lambda path: object())
     monkeypatch.setattr(manifest, "_artifact_path", lambda name: object())

@@ -83,6 +83,46 @@ def test_record_and_reconcile_player_prop_predictions():
     assert n == 1
 
 
+def test_reconcile_grades_a_qb_with_passing_tds_only_as_a_miss():
+    """End-to-end through the grader, not just the helper.
+
+    A passer who threw TDs and never rushed or caught one is graded 0.0. Under
+    the old inline sum in `reconcile_player_prop_predictions` he was graded 1.0
+    -- a stored prediction scored against a truth the model was never fitted
+    on, which is the bug NFL's PR #26 found.
+    """
+    store.record_player_prop_predictions([
+        {"game_id": "g_qb", "player_id": "p1", "player_name": "Passer",
+         "market": "anytime_td", "predicted_value": 0.62},
+    ])
+    player_stats_df = pd.DataFrame([
+        {"game_id": "g_qb", "player_id": "p1", "rushing_tds": 0, "receiving_tds": 0, "passing_tds": 3},
+    ])
+
+    assert store.reconcile_player_prop_predictions(player_stats_df) == 1
+
+    record = store.get_track_record()["player_props"]["anytime_td"]
+    assert record["n_resolved"] == 1
+    assert record["hit_rate_when_called"] == pytest.approx(0.0)
+
+
+def test_reconcile_grades_a_qb_with_a_rushing_td_as_a_hit():
+    """The other half of the QB case, so the test above cannot pass by the
+    grader rejecting every QB row."""
+    store.record_player_prop_predictions([
+        {"game_id": "g_qb", "player_id": "p1", "player_name": "Passer",
+         "market": "anytime_td", "predicted_value": 0.62},
+    ])
+    player_stats_df = pd.DataFrame([
+        {"game_id": "g_qb", "player_id": "p1", "rushing_tds": 1, "receiving_tds": 0, "passing_tds": 3},
+    ])
+
+    store.reconcile_player_prop_predictions(player_stats_df)
+
+    record = store.get_track_record()["player_props"]["anytime_td"]
+    assert record["hit_rate_when_called"] == pytest.approx(1.0)
+
+
 def test_anytime_td_confidence_buckets_have_agreed_keys():
     """Contract test: confidence bucket objects must carry exactly
     {label, n, hit_rate}. Renaming any key breaks the frontend

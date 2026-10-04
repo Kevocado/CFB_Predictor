@@ -257,13 +257,31 @@ def _load_models_or_503() -> dict:
     propagate as a bare unhandled 500. Does not address the larger "ship
     models in the image" / persistent-disk deploy question -- that's out of
     scope for this fix (see this plan's final-review fix, Task 23, finding
-    C3)."""
+    C3).
+
+    It also raises `manifest.StaleArtifactError` when the committed models no
+    longer match the code serving them -- a model fitted against a different
+    `anytime_td` definition, or against a different feature list. That is the
+    same class of "not ready to predict" as an untrained model, so it becomes a
+    503 too, carrying the verifier's own message: the whole point of that check
+    is that it names both sides, and swallowing the reason into a generic 503
+    would throw away the only actionable part. It stays a 503 rather than a
+    200-with-empty-predictions because a stale model must not serve predictions
+    at all.
+
+    That type, not a bare `ValueError`: `load_manifest` parses JSON, so a
+    corrupt `manifest.json` raises `json.JSONDecodeError`, itself a
+    `ValueError`. Catching `ValueError` here would report a corrupt file as
+    "stale trained model" and point an operator at a retrain instead of at the
+    file."""
     try:
         return _load_models_cached()
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503, detail="No trained model yet — run POST /api/retrain first"
         ) from exc
+    except manifest.StaleArtifactError as exc:
+        raise HTTPException(status_code=503, detail=f"Stale trained model: {exc}") from exc
 
 
 def _team_name_matches(cfbd_name: str, odds_name: str) -> bool:

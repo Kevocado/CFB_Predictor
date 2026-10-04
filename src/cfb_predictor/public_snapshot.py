@@ -23,6 +23,7 @@ from fastapi.encoders import jsonable_encoder
 
 from . import config
 from .api import routes
+from .models import manifest
 from .models import player_props
 
 # How many weeks past the current one get freshly rebuilt every run.
@@ -174,8 +175,27 @@ def _prop_shape_mismatch(week: dict, required: frozenset[str]) -> bool:
 
 def build_snapshot(previous: dict | None = None) -> dict:
     season, current_week = routes.current_season_and_week()
+    current_model_version = manifest.model_version(manifest.load_manifest())
     previous = previous or {}
-    previous_weeks = previous.get("weeks", {}) if previous.get("season") == season else {}
+    # A reused week is a VERBATIM COPY of the last run's numbers, so reusing a
+    # week built by a different model publishes two model versions inside one
+    # file. That is not hypothetical: regenerating the snapshot after the
+    # anytime-TD label changed refit only weeks 4-8 and kept weeks 1-3 and
+    # 9-16 from the old label, leaving 11 of 16 weeks publishing a definition
+    # the code no longer has. A stale snapshot publishing the old label's
+    # numbers is the whole bug this PR is about, so the reuse window is only
+    # allowed to carry weeks the CURRENT models produced.
+    stale_previous = previous.get("model_version") != current_model_version
+    if stale_previous and previous:
+        print(
+            f"  ! previous snapshot was built by {previous.get('model_version')!r} but the "
+            f"models are now {current_model_version!r}; rebuilding every week instead of "
+            "reusing weeks from a different model"
+        )
+    previous_weeks = (
+        {} if stale_previous
+        else (previous.get("weeks", {}) if previous.get("season") == season else {})
+    )
 
     rebuild_from = max(1, current_week - REBUILD_WEEKS_BEHIND)
     rebuild_to = min(MAX_WEEK, current_week + REBUILD_WEEKS_AHEAD)
@@ -270,31 +290,35 @@ def build_snapshot(previous: dict | None = None) -> dict:
         standings = routes._get_standings_live(season)
     except Exception as exc:
         print(f"  ! skipped standings: {exc}")
-        standings = previous.get("standings", []) if previous.get("season") == season else []
+        standings = previous.get("standings", []) if not stale_previous and previous.get("season") == season else []
 
     print("Building power rankings...")
     try:
         power_rankings = routes._get_power_rankings_live(season)
     except Exception as exc:
         print(f"  ! skipped power rankings: {exc}")
-        power_rankings = previous.get("power_rankings", {}) if previous.get("season") == season else {}
+        power_rankings = previous.get("power_rankings", {}) if not stale_previous and previous.get("season") == season else {}
 
     print("Building Data Hub tables...")
     try:
         hub_teams = routes._get_hub_teams_live(season)
     except Exception as exc:
         print(f"  ! skipped hub teams: {exc}")
-        hub_teams = previous.get("hub_teams", {}) if previous.get("season") == season else {}
+        hub_teams = previous.get("hub_teams", {}) if not stale_previous and previous.get("season") == season else {}
     try:
         hub_players = routes._get_hub_players_live(season)
     except Exception as exc:
         print(f"  ! skipped hub players: {exc}")
-        hub_players = previous.get("hub_players", {}) if previous.get("season") == season else {}
+        hub_players = previous.get("hub_players", {}) if not stale_previous and previous.get("season") == season else {}
 
     import pandas as pd
 
     return {
         "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        # Which models produced these numbers. Read back by `build_snapshot` to
+        # decide whether last run's weeks may be reused, so the file can never
+        # be assembled from two different model versions.
+        "model_version": current_model_version,
         "season": season,
         "current_week": current_week,
         "weeks": weeks,
@@ -305,7 +329,32 @@ def build_snapshot(previous: dict | None = None) -> dict:
     }
 
 
+def _verify_models_current() -> None:
+    """Raise unless the committed models match the code about to publish them.
+
+    A published snapshot is a promise that every number in it came from the
+    code in this repo. Nothing at write time used to check that: `build_snapshot`
+    swallows per-week exceptions (`! skipped prediction for ...`) and reuses
+    previously-published weeks wholesale, so a build against stale models
+    produces a full, well-formed, wrong file. The site then serves the old
+    label's numbers exactly as NFL's did.
+
+    Deliberately in the writing code and not in the workflow YAML. The
+    refresh-public-snapshot workflow can be dispatched by hand, and the deploy
+    workflow can run from a different ref, so a YAML-only check is bypassed by
+    exactly the runs nobody re-reads.
+
+    It calls the same `_verify_artifact_fingerprint` that `load_models` calls,
+    rather than `load_models` itself: the check is the point, and calling it
+    directly means no pickle is unpickled to decide whether the snapshot may be
+    written. Sharing the one function means the snapshot cannot be published
+    from a model the API would have rejected.
+    """
+    manifest._verify_artifact_fingerprint(manifest.load_manifest())
+
+
 def main() -> None:
+    _verify_models_current()
     previous = json.loads(config.PUBLIC_SNAPSHOT_PATH.read_text()) if config.PUBLIC_SNAPSHOT_PATH.exists() else None
     snapshot = jsonable_encoder(build_snapshot(previous))
     config.PUBLIC_SNAPSHOT_PATH.write_text(json.dumps(snapshot, indent=2))
