@@ -231,3 +231,105 @@ def test_the_snapshot_gate_is_not_only_in_workflow_yaml():
 
     source = inspect.getsource(public_snapshot.main)
     assert "_verify_models_current()" in source
+
+# --- the snapshot must not be older than the models ---------------------------
+
+def test_the_snapshot_records_the_model_version_that_produced_it(monkeypatch, tmp_path):
+    """A reused week is a verbatim copy, so the file must be able to say which
+    models produced it. Without this there is no way to notice a snapshot that
+    mixes two model versions."""
+    _trained_manifest(monkeypatch, tmp_path)
+    monkeypatch.setattr(manifest, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(manifest, "MANIFEST_PATH", tmp_path / "manifest.json")
+    monkeypatch.setattr(public_snapshot.routes, "current_season_and_week", lambda: (2026, 5))
+    monkeypatch.setattr(public_snapshot.routes, "_get_standings_live", lambda s: [])
+    monkeypatch.setattr(public_snapshot.routes, "_get_power_rankings_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_teams_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_players_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot, "_build_week", lambda s, w: {"games": [], "predictions": {}, "player_props": []})
+    monkeypatch.setattr(public_snapshot.config, "PUBLIC_SNAPSHOT_PATH", tmp_path / "snap.json")
+
+    public_snapshot.main()
+
+    import json as _json
+    written = _json.loads((tmp_path / "snap.json").read_text())
+    assert written["model_version"] == manifest.model_version(manifest.load_manifest())
+
+
+def test_a_snapshot_from_older_models_is_never_reused(monkeypatch, tmp_path):
+    """The defect this pair of gates exists for, found by doing it.
+
+    Regenerating after the anytime-TD label changed refit only weeks 4-8 and
+    copied weeks 1-3 and 9-16 straight from the old-label snapshot, so 11 of 16
+    weeks kept publishing a definition the code no longer had. A stale pair --
+    snapshot built by an older `model_version` than the committed models -- must
+    rebuild every week instead of reusing any.
+    """
+    _trained_manifest(monkeypatch, tmp_path)
+    monkeypatch.setattr(manifest, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(manifest, "MANIFEST_PATH", tmp_path / "manifest.json")
+    monkeypatch.setattr(public_snapshot.routes, "current_season_and_week", lambda: (2026, 5))
+    monkeypatch.setattr(public_snapshot.routes, "_get_standings_live", lambda s: [])
+    monkeypatch.setattr(public_snapshot.routes, "_get_power_rankings_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_teams_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_players_live", lambda s: {})
+
+    built_weeks = []
+
+    def _record(season, week):
+        built_weeks.append(week)
+        return {"games": [], "predictions": {}, "player_props": []}
+
+    monkeypatch.setattr(public_snapshot, "_build_week", _record)
+    monkeypatch.setattr(public_snapshot.config, "PUBLIC_SNAPSHOT_PATH", tmp_path / "snap.json")
+
+    stale_previous = {
+        "season": 2026,
+        "current_week": 5,
+        # Older models: same candidate, earlier fit.
+        "model_version": "ridge@2020-01-01T00:00:00+00:00",
+        "weeks": {str(w): {"games": [], "predictions": {}, "player_props": []}
+                  for w in range(1, public_snapshot.MAX_WEEK + 1)},
+    }
+    (tmp_path / "snap.json").write_text(__import__("json").dumps(stale_previous))
+
+    public_snapshot.main()
+
+    # Every week rebuilt, not just the 4-8 window.
+    assert built_weeks == list(range(1, public_snapshot.MAX_WEEK + 1))
+
+
+def test_a_snapshot_from_the_same_models_is_still_reused(monkeypatch, tmp_path):
+    """The other half, so the gate above cannot be satisfied by never reusing:
+    the reuse optimisation has to survive for a snapshot the current models
+    produced, or every run costs a full rebuild."""
+    _trained_manifest(monkeypatch, tmp_path)
+    monkeypatch.setattr(manifest, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(manifest, "MANIFEST_PATH", tmp_path / "manifest.json")
+    monkeypatch.setattr(public_snapshot.routes, "current_season_and_week", lambda: (2026, 5))
+    monkeypatch.setattr(public_snapshot.routes, "_get_standings_live", lambda s: [])
+    monkeypatch.setattr(public_snapshot.routes, "_get_power_rankings_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_teams_live", lambda s: {})
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_players_live", lambda s: {})
+
+    built_weeks = []
+
+    def _record(season, week):
+        built_weeks.append(week)
+        return {"games": [], "predictions": {}, "player_props": []}
+
+    monkeypatch.setattr(public_snapshot, "_build_week", _record)
+    monkeypatch.setattr(public_snapshot.config, "PUBLIC_SNAPSHOT_PATH", tmp_path / "snap.json")
+
+    current_version = manifest.model_version(manifest.load_manifest())
+    same_previous = {
+        "season": 2026, "current_week": 5, "model_version": current_version,
+        "weeks": {str(w): {"games": [], "predictions": {}, "player_props": []}
+                  for w in range(1, public_snapshot.MAX_WEEK + 1)},
+    }
+    (tmp_path / "snap.json").write_text(__import__("json").dumps(same_previous))
+
+    public_snapshot.main()
+
+    # current_week 5, window = 5-1 .. 5+3 = 4..8 only.
+    assert built_weeks == [4, 5, 6, 7, 8]

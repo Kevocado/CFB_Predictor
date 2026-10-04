@@ -175,8 +175,27 @@ def _prop_shape_mismatch(week: dict, required: frozenset[str]) -> bool:
 
 def build_snapshot(previous: dict | None = None) -> dict:
     season, current_week = routes.current_season_and_week()
+    current_model_version = manifest.model_version(manifest.load_manifest())
     previous = previous or {}
-    previous_weeks = previous.get("weeks", {}) if previous.get("season") == season else {}
+    # A reused week is a VERBATIM COPY of the last run's numbers, so reusing a
+    # week built by a different model publishes two model versions inside one
+    # file. That is not hypothetical: regenerating the snapshot after the
+    # anytime-TD label changed refit only weeks 4-8 and kept weeks 1-3 and
+    # 9-16 from the old label, leaving 11 of 16 weeks publishing a definition
+    # the code no longer has. A stale snapshot publishing the old label's
+    # numbers is the whole bug this PR is about, so the reuse window is only
+    # allowed to carry weeks the CURRENT models produced.
+    stale_previous = previous.get("model_version") != current_model_version
+    if stale_previous and previous:
+        print(
+            f"  ! previous snapshot was built by {previous.get('model_version')!r} but the "
+            f"models are now {current_model_version!r}; rebuilding every week instead of "
+            "reusing weeks from a different model"
+        )
+    previous_weeks = (
+        {} if stale_previous
+        else (previous.get("weeks", {}) if previous.get("season") == season else {})
+    )
 
     rebuild_from = max(1, current_week - REBUILD_WEEKS_BEHIND)
     rebuild_to = min(MAX_WEEK, current_week + REBUILD_WEEKS_AHEAD)
@@ -296,6 +315,10 @@ def build_snapshot(previous: dict | None = None) -> dict:
 
     return {
         "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        # Which models produced these numbers. Read back by `build_snapshot` to
+        # decide whether last run's weeks may be reused, so the file can never
+        # be assembled from two different model versions.
+        "model_version": current_model_version,
         "season": season,
         "current_week": current_week,
         "weeks": weeks,
