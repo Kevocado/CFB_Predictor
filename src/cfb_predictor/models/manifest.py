@@ -24,6 +24,20 @@ ANYTIME_TD_MODEL_FILENAME = "anytime_td_model.pkl"
 DEFAULT_TRAIN_SEASONS = 8
 
 
+class StaleArtifactError(ValueError):
+    """The committed models no longer match the code that would serve them.
+
+    Its own type, rather than a bare `ValueError`, because callers need to tell
+    this apart from every other `ValueError` on the path: `load_manifest`
+    parses JSON, and a truncated or corrupt `manifest.json` raises
+    `json.JSONDecodeError`, which IS a `ValueError`. Catching `ValueError` at
+    the API edge would then report a corrupt file as "stale trained model" and
+    send an operator to retrain when the actual fix is to restore the file.
+    Subclasses `ValueError` so existing `pytest.raises(ValueError)` assertions
+    keep holding.
+    """
+
+
 def _save_pickle(obj, path) -> None:
     with open(path, "wb") as f:
         pickle.dump(obj, f)
@@ -188,7 +202,7 @@ def _verify_artifact_fingerprint(manifest: dict) -> None:
     """
     recorded = manifest.get("artifact_fingerprint")
     if recorded is None:
-        raise ValueError(
+        raise StaleArtifactError(
             f"{MANIFEST_PATH} has no 'artifact_fingerprint' key, so the committed "
             "models cannot be verified against the code that serves them. It was "
             "written before fingerprinting existed, and an unverified artefact is "
@@ -201,7 +215,7 @@ def _verify_artifact_fingerprint(manifest: dict) -> None:
     expected_features = current["player_feature_cols"]
     fitted_features = list(recorded.get("player_feature_cols") or [])
     if fitted_features != expected_features:
-        raise ValueError(
+        raise StaleArtifactError(
             f"{MANIFEST_PATH} records models fitted on {fitted_features} but the "
             f"code's player features are now {expected_features} "
             f"({player_usage.__name__}.PLAYER_FEATURE_COLUMNS). The committed "
@@ -219,7 +233,7 @@ def _verify_artifact_fingerprint(manifest: dict) -> None:
     # check above stayed green: the same silent degradation from the other side.
     manifest_features = list(manifest.get("player_feature_cols") or [])
     if manifest_features != fitted_features:
-        raise ValueError(
+        raise StaleArtifactError(
             f"{MANIFEST_PATH} records an artefact fingerprint fitted on "
             f"{fitted_features} but its own 'player_feature_cols' is "
             f"{manifest_features}. Serving reindexes every player row by the "
@@ -231,7 +245,7 @@ def _verify_artifact_fingerprint(manifest: dict) -> None:
     expected_version = current["anytime_td_label_version"]
     fitted_version = recorded.get("anytime_td_label_version")
     if fitted_version != expected_version:
-        raise ValueError(
+        raise StaleArtifactError(
             f"{MANIFEST_PATH} records the anytime-TD model fitted against label "
             f"definition v{fitted_version}, but the code now defines "
             f"v{expected_version} ({player_usage.__name__}.ANYTIME_TD_LABEL_VERSION). "

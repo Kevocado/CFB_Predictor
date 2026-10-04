@@ -333,3 +333,76 @@ def test_a_snapshot_from_the_same_models_is_still_reused(monkeypatch, tmp_path):
 
     # current_week 5, window = 5-1 .. 5+3 = 4..8 only.
     assert built_weeks == [4, 5, 6, 7, 8]
+
+
+def test_a_corrupt_manifest_is_not_mislabelled_as_a_stale_model(monkeypatch, tmp_path):
+    """`StaleArtifactError` exists so the two failures stay distinguishable.
+
+    `load_manifest` parses JSON, and `json.JSONDecodeError` subclasses
+    `ValueError`. Catching `ValueError` at the API edge would report a corrupt
+    file as "stale trained model" and send an operator to retrain when the fix
+    is to restore the file. So the staleness type must not be what a corrupt
+    manifest raises, and the API must not convert it.
+    """
+    from fastapi import HTTPException
+    from cfb_predictor.api import routes
+    import json as _json
+
+    monkeypatch.setattr(manifest, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(manifest, "MANIFEST_PATH", tmp_path / "manifest.json")
+    (tmp_path / "manifest.json").write_text("{not valid json")
+    routes._load_models_cached.cache_clear()
+
+    # Raises as a JSON error, NOT as the staleness error.
+    with pytest.raises(_json.JSONDecodeError):
+        manifest.load_models()
+    assert not isinstance(_json.JSONDecodeError("x", "y", 0), manifest.StaleArtifactError)
+
+    # And the API does not dress it up as staleness.
+    with pytest.raises(_json.JSONDecodeError):
+        routes._load_models_or_503()
+    routes._load_models_cached.cache_clear()
+
+
+def test_a_stale_snapshot_supplies_neither_weeks_nor_standings(monkeypatch, tmp_path):
+    """The non-week fallbacks are the same defect as the week reuse.
+
+    `standings`, `power_rankings`, `hub_teams` and `hub_players` all fall back to
+    the previous snapshot when their live builder throws. If a previous snapshot
+    was produced by different models, reusing its standings republishes numbers
+    the current models did not produce -- the same "two model versions in one
+    file" problem, just in the tables rather than the weeks. So the guard on
+    `previous_weeks` has to cover these four too, and this asserts it does.
+    """
+    _trained_manifest(monkeypatch, tmp_path)
+    monkeypatch.setattr(manifest, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(manifest, "MANIFEST_PATH", tmp_path / "manifest.json")
+    monkeypatch.setattr(public_snapshot.routes, "current_season_and_week", lambda: (2026, 5))
+
+    def _offline(*_a, **_k):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(public_snapshot.routes, "_get_standings_live", _offline)
+    monkeypatch.setattr(public_snapshot.routes, "_get_power_rankings_live", _offline)
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_teams_live", _offline)
+    monkeypatch.setattr(public_snapshot.routes, "_get_hub_players_live", _offline)
+    monkeypatch.setattr(public_snapshot, "_build_week",
+                        lambda s, w: {"games": [], "predictions": {}, "player_props": []})
+
+    stale = {
+        "season": 2026, "current_week": 5,
+        "model_version": "ridge@2001-01-01T00:00:00+00:00",   # older models
+        "standings": [{"team": "Stale", "wins": 99}],
+        "power_rankings": {"Stale": 99},
+        "hub_teams": {"Stale": 99},
+        "hub_players": {"Stale": 99},
+        "weeks": {str(w): {"games": [], "predictions": {}, "player_props": []}
+                  for w in range(1, public_snapshot.MAX_WEEK + 1)},
+    }
+
+    result = public_snapshot.build_snapshot(stale)
+
+    assert result["standings"] == []
+    assert result["power_rankings"] == {}
+    assert result["hub_teams"] == {}
+    assert result["hub_players"] == {}

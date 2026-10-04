@@ -290,26 +290,26 @@ def build_snapshot(previous: dict | None = None) -> dict:
         standings = routes._get_standings_live(season)
     except Exception as exc:
         print(f"  ! skipped standings: {exc}")
-        standings = previous.get("standings", []) if previous.get("season") == season else []
+        standings = previous.get("standings", []) if not stale_previous and previous.get("season") == season else []
 
     print("Building power rankings...")
     try:
         power_rankings = routes._get_power_rankings_live(season)
     except Exception as exc:
         print(f"  ! skipped power rankings: {exc}")
-        power_rankings = previous.get("power_rankings", {}) if previous.get("season") == season else {}
+        power_rankings = previous.get("power_rankings", {}) if not stale_previous and previous.get("season") == season else {}
 
     print("Building Data Hub tables...")
     try:
         hub_teams = routes._get_hub_teams_live(season)
     except Exception as exc:
         print(f"  ! skipped hub teams: {exc}")
-        hub_teams = previous.get("hub_teams", {}) if previous.get("season") == season else {}
+        hub_teams = previous.get("hub_teams", {}) if not stale_previous and previous.get("season") == season else {}
     try:
         hub_players = routes._get_hub_players_live(season)
     except Exception as exc:
         print(f"  ! skipped hub players: {exc}")
-        hub_players = previous.get("hub_players", {}) if previous.get("season") == season else {}
+        hub_players = previous.get("hub_players", {}) if not stale_previous and previous.get("season") == season else {}
 
     import pandas as pd
 
