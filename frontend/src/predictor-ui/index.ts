@@ -1,0 +1,25 @@
+// Synced from predictor-ui@490df2925aaf. Do not edit here: change predictor-hub/packages/predictor-ui and re-run scripts/sync-ui.mjs.
+export * from "./fmt";
+export { contrast, inkFor, luminance } from "./contrast";
+export { AppFrame, type SiteLink, type Sport, type Tab } from "./components/AppFrame";
+export { MatchCard, type Side } from "./components/MatchCard";
+export { ProbabilityBar, type PickRef, type Segment } from "./components/ProbabilityBar";
+export { RoundNavigator } from "./components/RoundNavigator";
+export { StatTile } from "./components/StatTile";
+export { EmptyState, ErrorState, Skeleton } from "./components/States";
+export { ExplainerPanel, type Explanation, type Verdict, type Common } from "./components/ExplainerPanel";
+export { BandChip, PanelHeading, type Band } from "./components/ExplainerVerdict";
+export { KeyNumberTile, type MarketTile } from "./components/KeyNumberTile";
+export { FactorList, type Factor } from "./components/FactorList";
+export { RecordStrip } from "./components/RecordStrip";
+export { FixtureFlow, type FixtureFlowProps, type FlowState } from "./components/FixtureFlow";
+export { SummaryButton, type SummaryButtonProps } from "./components/SummaryButton";
+export { FixtureExplainer, type FixtureExplainerProps, type FixtureExtras, type Summary } from "./components/FixtureExplainer";
+export { StatTable, type Column } from "./components/StatTable";
+export { StatusBadge, statusWords, type Moment, type Status } from "./components/StatusBadge";
+export { TeamChip } from "./components/TeamChip";
+export { BoxScore, type BoxScoreRow, type BoxScoreColumn, type BoxScoreGroup, type BoxScoreTotal, type BoxScoreProps } from "./components/BoxScore";
+export { PicksList, MAX_ROWS_PER_CATEGORY, DEFAULT_DETAIL_LABEL, detailAddsToHeading, rowShowsDetail, OutPlayerInRankingError, RowKindMismatchError, type PickRow, type OutPlayer, type PicksListProps } from "./components/PicksList";
+export { SignalRows, SPEC_MIN_N, MAX_HEADLINE_WORDS, DEFAULT_SIGNAL_TITLE, clipHeadline, rateIsDrawable, signalIsDrawn, signalFigure, headlineStatesFigure, figureRange, assertFigureIsStated, UndrawableSignalVisualError, SignalFigureError, HeadlineFigureMismatchError, type Signal, type SignalKind, type SignalVisual, type SignalRowsProps } from "./components/SignalRows";
+export * from "./lib/bundleFacts";
+export { InstantBlock, type InstantBlockProps, AI_PROMISE } from "./components/InstantBlock";

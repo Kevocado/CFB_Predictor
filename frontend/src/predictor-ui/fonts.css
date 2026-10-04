@@ -1,0 +1,5 @@
+/* Synced from predictor-ui@490df2925aaf. Do not edit here: change predictor-hub/packages/predictor-ui and re-run scripts/sync-ui.mjs. */
+/* Barlow + Barlow Condensed. Import this FIRST, before tailwindcss: an
+   @import url() anywhere after other rules is dropped by the CSS spec, and
+   Tailwind inlines tokens.css after its own output. */
+@import url("https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap");

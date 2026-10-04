@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { GameDetailModal } from "../components/GameDetailModal";
 import type { GamePrediction, GameSummary } from "../types";
 
 export function GamesPage() {
@@ -9,6 +10,14 @@ export function GamesPage() {
   const [predictions, setPredictions] = useState<Record<string, GamePrediction>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which fixture the modal is showing, or null. Held here rather than inside a
+  // row so switching weeks closes it: a modal left open over a list it no longer
+  // belongs to is a modal showing a game the reader did not choose.
+  const [openGameId, setOpenGameId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setOpenGameId(null);
+  }, [season, week]);
 
   useEffect(() => {
     setLoading(true);
@@ -53,17 +62,27 @@ export function GamesPage() {
           const prediction = predictions[game.game_id];
           return (
             <li key={game.game_id}>
-              <strong>{game.away_team} @ {game.home_team}</strong> — {new Date(game.gameday).toLocaleDateString()}
-              {prediction && (
-                <span>
-                  {" "}— Home win {Math.round(prediction.home_win_prob * 100)}%
-                  {prediction.over_prob != null && ` · Over ${Math.round(prediction.over_prob * 100)}%`}
-                </span>
-              )}
+              {/* A real button, not a clickable div: the modal is now the only
+                  way to reach a fixture's facts and its signal rows, so the row
+                  has to be reachable by keyboard and announce what it does. */}
+              <button
+                type="button"
+                onClick={() => setOpenGameId(game.game_id)}
+                className="text-left"
+              >
+                <strong>{game.away_team} @ {game.home_team}</strong> — {new Date(game.gameday).toLocaleDateString()}
+                {prediction && (
+                  <span>
+                    {" "}— Home win {Math.round(prediction.home_win_prob * 100)}%
+                    {prediction.over_prob != null && ` · Over ${Math.round(prediction.over_prob * 100)}%`}
+                  </span>
+                )}
+              </button>
             </li>
           );
         })}
       </ul>
+      {openGameId && <GameDetailModal gameId={openGameId} onClose={() => setOpenGameId(null)} />}
     </div>
   );
 }

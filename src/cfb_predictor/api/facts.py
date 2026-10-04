@@ -400,8 +400,20 @@ def get_facts_upcoming(hours: int = 72) -> dict:
     return {"ids": ids}
 
 
-@router.get("/facts/{game_id}")
-def get_facts(game_id: str) -> dict:
+def game_pick(game_id: str) -> dict:
+    """The game's headline pick and everything the decision to make it was taken
+    from. Raises 404 when the game is unknown.
+
+    Split out of `get_facts` so `GET /api/signals/{game_id}` can quote the SAME
+    pick. That is the whole point of the split: a signal that recomputed the pick
+    could put a different probability on the page than the facts block beside it,
+    and the two would both be defensible and inconsistent. The rule below is the
+    one that decides which number a started game shows, so it has exactly one
+    implementation.
+
+    Returns the pick, its timing label, the row-sourced probabilities, and the
+    started flag — the four things the bundle and the signals endpoint both need.
+    """
     now = _now()
     season, week, game = _load_game(game_id)
     home_team, away_team = game["home_team"], game["away_team"]
@@ -445,6 +457,30 @@ def get_facts(game_id: str) -> dict:
         pick_timing = "rebuilt" if row.get("rebuilt") else "pre_kickoff"
     else:
         pick_timing = "pre_kickoff"
+
+    return {
+        "season": season,
+        "week": week,
+        "game": game,
+        "home_team": home_team,
+        "away_team": away_team,
+        "status": status,
+        "started": started,
+        "stored": stored,
+        "pick_source": pick_source,
+        "pick": pick,
+        "pick_timing": pick_timing,
+    }
+
+
+@router.get("/facts/{game_id}")
+def get_facts(game_id: str) -> dict:
+    ctx = game_pick(game_id)
+    season, week, game = ctx["season"], ctx["week"], ctx["game"]
+    home_team, away_team = ctx["home_team"], ctx["away_team"]
+    status, started = ctx["status"], ctx["started"]
+    stored, pick_source = ctx["stored"], ctx["pick_source"]
+    pick, pick_timing = ctx["pick"], ctx["pick_timing"]
 
     # A started game with no stored pick has no honest line to quote.
     # The moneyline comes from `pick_source` so the bundle states the pick
