@@ -153,8 +153,29 @@ def test_the_module_has_exactly_one_implementation_of_the_label():
     source = inspect.getsource(player_usage.build_player_training_frame)
     assert "anytime_td_actual(" in source
     # No raw TD sum in the training frame: the definition lives in one place.
-    assert "rushing_tds\"] + " not in source
-    assert "passing_tds" not in source
+    # Checked for EVERY TD column, by the same bracketed-plus shape as the
+    # sibling assertion above.
+    #
+    # This used to end `assert "passing_tds" not in source`, a bare substring
+    # that was coarser than the thing it protected. The QB passing-TD FEATURE now
+    # lives in this module, and `with_passing_tds_roll(df)` contains that
+    # substring while having nothing to do with the label -- so the guard could
+    # not tell a feature helper from a label, and a guard like that gets deleted
+    # instead of fixed. The two assertions below are what it was reaching for.
+    for column in ("rushing_tds", "receiving_tds", "passing_tds"):
+        assert f'["{column}"] +' not in source
+    # The blunt net, in a form that does not misfire: every identifier in this
+    # function containing "passing_tds" must be one of the two names that
+    # legitimately refer to the FEATURE. `df["passing_tds"]`, or any new
+    # identifier mentioning it, trips this.
+    import re
+
+    allowed = {"with_passing_tds_roll", "PASSING_TDS_ROLL_COLUMN"}
+    mentioned = set(re.findall(r"\w*passing_tds\w*", source))
+    assert mentioned <= allowed, (
+        f"the label path references passing_tds as {sorted(mentioned - allowed)}; "
+        "only the feature helper may"
+    )
 
 
 def test_the_grader_delegates_to_the_shared_definition():

@@ -17,6 +17,21 @@ import pandas as pd
 ROLL_STATS = ["passing_yards", "rushing_yards", "receiving_yards", "targets", "carries", "receptions"]
 PLAYER_FEATURE_COLUMNS = [f"{stat}_roll" for stat in ROLL_STATS]
 
+#: The window every rolling feature uses, in training and at serving alike.
+#: Declared once because `with_passing_tds_roll` and `build_features_for_player`
+#: have to agree on it, and two literal `5`s are two chances to disagree.
+DEFAULT_ROLL_WINDOW = 5
+
+#: `passing_tds_roll` -- the rolling passing-TD count the QB passing-TD model
+#: (`models/qb_passing_td.py`) is fitted on.
+#:
+#: Deliberately NOT in `ROLL_STATS`, so not in `PLAYER_FEATURE_COLUMNS`: that
+#: list is what the anytime-TD classifier and every yardage regressor are fitted
+#: on and what `predict_props` indexes by name, so widening it would change the
+#: feature count of every already-committed model. It is computed and served as
+#: its own column.
+PASSING_TDS_ROLL_COLUMN = "passing_tds_roll"
+
 #: Version of the `anytime_td` DEFINITION (not of the code -- of the label).
 #: Bump this whenever `anytime_td_actual`'s arithmetic changes. It is recorded
 #: in the manifest at fit time and checked at load time by
@@ -30,7 +45,26 @@ PLAYER_FEATURE_COLUMNS = [f"{stat}_roll" for stat in ROLL_STATS]
 ANYTIME_TD_LABEL_VERSION = 2
 
 
-def _add_rolling(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
+def with_passing_tds_roll(df: pd.DataFrame, window: int = DEFAULT_ROLL_WINDOW) -> pd.DataFrame:
+    """`df` plus `passing_tds_roll`, on `_add_rolling`'s exact discipline.
+
+    Same `shift(1).rolling(window, min_periods=1).mean()` per player, for the same
+    reason every other rolled stat uses it: a pregame feature cannot know the game
+    being predicted. It exists as one function so the training column and the
+    column `build_features_for_player` emits cannot drift apart -- which is how
+    NFL's own `passing_tds_roll` came to be fitted on and served as a constant
+    zero, the two having been written separately.
+
+    Returns a copy sorted by `["player_id", "season", "week"]` with a fresh index,
+    like `_add_rolling`, so it never mutates its argument.
+    """
+    df = df.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
+    df[PASSING_TDS_ROLL_COLUMN] = df.groupby("player_id")["passing_tds"].transform(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+    return df
+
+
+def _add_rolling(df: pd.DataFrame, window: int = DEFAULT_ROLL_WINDOW) -> pd.DataFrame:
     df = df.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
     grouped = df.groupby("player_id")
     for stat in ROLL_STATS:
@@ -94,6 +128,12 @@ def build_player_training_frame(player_stats_df: pd.DataFrame) -> tuple[pd.DataF
     # shape; and `predict_props` scores a live row from features alone, so the
     # only artefact affected is one refitted against this label.
     df["anytime_td"] = anytime_td_actual(df["rushing_tds"], df["receiving_tds"]).astype(int)
+
+    # The passing-TD model's own feature, on the same shift(1) discipline. The
+    # returned column list stays `PLAYER_FEATURE_COLUMNS` on purpose: this
+    # column belongs to the passing-TD model alone and widening the list would
+    # change the feature count of every already-committed artefact.
+    df = with_passing_tds_roll(df)
     return df, PLAYER_FEATURE_COLUMNS
 
 
@@ -101,5 +141,13 @@ def build_features_for_player(player_id: str, player_stats_df: pd.DataFrame) -> 
     history = player_stats_df[player_stats_df["player_id"] == player_id].sort_values(["season", "week"])
     if history.empty:
         return None
-    recent = history.tail(5)
-    return pd.Series({f"{stat}_roll": float(recent[stat].mean()) for stat in ROLL_STATS})
+    # `tail(window)` is the serving-time equivalent of the shifted rolling mean:
+    # the last `window` rows of a player's history are the weeks BEFORE the one
+    # being predicted, because the store's row for that week does not exist yet.
+    recent = history.tail(DEFAULT_ROLL_WINDOW)
+    row = {f"{stat}_roll": float(recent[stat].mean()) for stat in ROLL_STATS}
+    # Emitted for the passing-TD model, from the same window and so from the same
+    # discipline as the training column.
+    if "passing_tds" in recent.columns:
+        row[PASSING_TDS_ROLL_COLUMN] = float(recent["passing_tds"].mean())
+    return pd.Series(row)
