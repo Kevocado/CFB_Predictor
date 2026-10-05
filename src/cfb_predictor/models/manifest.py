@@ -14,12 +14,18 @@ from ..data import player_stats
 from ..evaluate import walk_forward
 from ..features import build as feature_build
 from ..features import player_usage
-from . import game_outcome, player_props
+from . import game_outcome, player_props, qb_passing_td
 
 MANIFEST_PATH = MODELS_DIR / "manifest.json"
 GAME_MODEL_FILENAME = "game_outcome_model.pkl"
 TOTAL_MODEL_FILENAME = "total_points_model.pkl"
 ANYTIME_TD_MODEL_FILENAME = "anytime_td_model.pkl"
+
+#: Its OWN file, not `f"{market}_model.pkl"`, for the same reason the yardage
+#: models get one: the QB passing-TD fit is a different SHAPE (a fitted dict
+#: holding a distribution, an alpha and both log losses) from a bare regressor,
+#: and a name that looks like the others invites loading it as one.
+QB_PASSING_TD_MODEL_FILENAME = "qb_passing_td_model.pkl"
 
 DEFAULT_TRAIN_SEASONS = 8
 
@@ -54,6 +60,59 @@ def _artifact_path(filename: str):
 
 def _yardage_model_path(market: str):
     return _artifact_path(f"{market}_model.pkl")
+
+
+def _fit_qb_passing_td(player_train_df: pd.DataFrame) -> dict | None:
+    """Fit and persist the QB passing-TD model, or return None if there is none.
+
+    **None, and the artefact REMOVED, when no QB has usable history** -- the same
+    discipline the yardage loop in `train_all` already uses. A model fitted on
+    nothing raises inside `fit_qb_passing_td_model`, and the alternative (an
+    artefact that predicts a flat distribution for every QB forever, from a market
+    that was never really trained) is worse than no market: it looks fitted in a
+    manifest and scores every QB.
+
+    The manifest entry carries the fit's OWN numbers -- which distribution won,
+    both log losses, alpha, the variance ratio, `n_train` and the exact columns
+    read -- because NFL's docstring once described its artefact as it was *before*
+    a retrain onto anytime-TD label v2 features and nothing noticed. Prose is not
+    asserted by default; a manifest key is read by whatever retrains next.
+
+    Only QBs are fitted. `passing_tds` is 0 for every non-QB, so including them
+    would add a mass point at zero and make the variance-to-mean ratio -- the
+    quantity the Poisson-vs-negative-binomial choice reacts to -- a statement
+    about how many running backs there are.
+    """
+    path = _artifact_path(QB_PASSING_TD_MODEL_FILENAME)
+    has_position = "position" in player_train_df.columns
+    qb = player_train_df[player_train_df["position"] == "QB"] if has_position else player_train_df.iloc[0:0]
+    if qb.empty or "passing_tds" not in qb.columns:
+        path.unlink(missing_ok=True)
+        return None
+
+    # `passing_tds_roll` is NaN on each QB's first week -- there is no prior week
+    # to roll -- and those rows carry no information about a next week's
+    # expectation. Dropping on that column ALONE is deliberate: `dropna` over every
+    # feature would silently discard rows where an unrelated stat was missing, and
+    # the count of what survived is the `n_train` recorded below.
+    cols = list(qb_passing_td.MU_FEATURE_COLUMNS) + [player_usage.PASSING_TDS_ROLL_COLUMN]
+    usable = qb.dropna(subset=[player_usage.PASSING_TDS_ROLL_COLUMN])
+    if usable.empty:
+        path.unlink(missing_ok=True)
+        return None
+
+    fitted = qb_passing_td.fit_qb_passing_td_model(
+        usable[cols].fillna(0), usable["passing_tds"].astype(float)
+    )
+    _save_pickle(fitted, path)
+    return {
+        "distribution": fitted["distribution"],
+        "alpha": fitted["alpha"],
+        "log_loss": fitted["log_loss"],
+        "variance_ratio": fitted["variance_ratio"],
+        "n_train": fitted["n_train"],
+        "feature_cols": fitted["feature_cols"],
+    }
 
 
 def _fbs_teams_by_season(seasons: list[int]) -> dict[int, set[str]]:
@@ -119,6 +178,14 @@ def train_all(seasons: list[int] | None = None) -> dict:
     anytime_td_model = player_props.fit_anytime_td_classifier(X_player, player_train_df["anytime_td"])
     _save_pickle(anytime_td_model, _artifact_path(ANYTIME_TD_MODEL_FILENAME))
 
+    # The QB passing-TD market. `MU_FEATURE_COLUMNS` plus `passing_tds_roll`,
+    # which `player_usage` deliberately keeps OUT of `PLAYER_FEATURE_COLUMNS` so
+    # widening that list would not change the feature count of every already-
+    # committed artefact. So the columns this model reads are assembled HERE,
+    # from the model module's own declaration and the feature module's own column
+    # name -- never a literal list of either.
+    qb_metric = _fit_qb_passing_td(player_train_df)
+
     yardage_metrics = {}
     for market, target_col in player_props.YARDAGE_TARGETS.items():
         path = _yardage_model_path(market)
@@ -141,6 +208,7 @@ def train_all(seasons: list[int] | None = None) -> dict:
         "sigma": sigma,
         "total_sigma": total_sigma,
         "yardage_metrics": yardage_metrics,
+        **({"qb_passing_td": qb_metric} if qb_metric else {}),
         "artifact_fingerprint": artifact_fingerprint(player_feature_cols),
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
@@ -279,6 +347,29 @@ def load_models() -> dict:
     }
     for market in manifest["yardage_metrics"]:
         player_models[market] = _load_pickle(_yardage_model_path(market))
+
+    # Present only if a manifest declares it. An older manifest, or one written
+    # when no QB had history, simply has no key -- which is why this is a `get`
+    # and not an index: a deployment upgraded ahead of its first retrain must come
+    # up and serve every OTHER market rather than 503 on an absent pickle.
+    if manifest.get("qb_passing_td"):
+        fitted = _load_pickle(_artifact_path(QB_PASSING_TD_MODEL_FILENAME))
+        # The fit's columns are the SAME ones `load_models` hands to every other
+        # player model, plus `passing_tds_roll`. Assert the relationship ONCE here,
+        # for the whole payload, rather than per player at score time: a mismatch
+        # means every QB would be scored from a constant-zero roll, and
+        # `qb_passing_td.expected_passing_tds` raising per player turns that into
+        # a season of one-log-line-per-QB exceptions instead of a failed deploy.
+        served = set(player_models["feature_cols"]) | {player_usage.PASSING_TDS_ROLL_COLUMN}
+        missing = [c for c in fitted.get("feature_cols", []) if c not in served]
+        if missing:
+            raise RuntimeError(
+                f"the QB passing-TD model is fitted on {fitted.get('feature_cols')}, and "
+                f"{missing} are not columns the served feature row carries. Scoring it anyway "
+                f"would fill {missing} with 0.0 for every QB -- the fitted-a-feature-served-"
+                f"as-constant-zero defect. Retrain, or serve a player_usage that emits them."
+            )
+        player_models[qb_passing_td.PASSING_TD_MARKET] = fitted
 
     return {
         "game_outcome_model": _load_pickle(_artifact_path(GAME_MODEL_FILENAME)),
