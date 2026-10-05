@@ -66,5 +66,21 @@
       "receptions_roll"
     ],
     "anytime_td_label_version": 2
+  },
+  "qb_passing_td": {
+    "distribution": "negative_binomial",
+    "alpha": 7.0033100549149685,
+    "log_loss": {
+      "poisson": 1.2510109539017458,
+      "negative_binomial": 1.245850218409551
+    },
+    "variance_ratio": 1.5059996716764965,
+    "n_train": 28466,
+    "feature_cols": [
+      "passing_yards_roll",
+      "rushing_yards_roll",
+      "receiving_yards_roll",
+      "passing_tds_roll"
+    ]
   }
 }
