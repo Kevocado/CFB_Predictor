@@ -30,7 +30,7 @@ from ..data import player_stats, sportsbook_api
 from ..data import advanced_stats
 from ..features import build as feature_build
 from ..features import player_usage, power_ratings
-from ..models import game_outcome, manifest, player_props, season_projection
+from ..models import game_outcome, manifest, player_props, qb_passing_td, season_projection
 from ..odds import value_bets
 from ..tracking import store
 
@@ -631,6 +631,32 @@ def _get_player_props_live(season: int, week: int):
                     continue
                 
                 props = player_props.predict_props(models["player_models"], feature_row, position=player["position"])
+
+                # QB passing TDs. Its OWN key rather than a member of
+                # `predict_props`'s flat `{market: float}` result, because a call
+                # carries a line, a side, both tail probabilities and the
+                # distribution it chose -- a shape that does not fit beside
+                # `{"passing_yards": 241.0}` without loosening every consumer.
+                #
+                # QBs only, and the gate is the POSITION, not the fit: `passing_tds`
+                # is 0 for every non-QB, so a fitted model will happily produce a
+                # real-looking over/under for a running back who never threw.
+                #
+                # Contained: a market that raises costs this one field, not the
+                # player's yardage and anytime-TD rows, which are what the page has
+                # today. Every other exception handler in this loop is per-PLAYER
+                # and `continue`s, so without this the whole prop row would vanish.
+                qb_call = None
+                if player["position"] == "QB":
+                    try:
+                        qb_call = qb_passing_td.qb_passing_td_call(
+                            models["player_models"].get(qb_passing_td.PASSING_TD_MARKET), feature_row
+                        )
+                    except Exception as qb_err:
+                        logger.warning(
+                            "QB passing-TD call unavailable for player_id=%s: %s",
+                            player.get("player_id"), qb_err,
+                        )
                 results.append({
                     "player_id": player["player_id"],
                     "player_name": player["player_name"],
@@ -661,6 +687,11 @@ def _get_player_props_live(season: int, week: int):
                     # per-sport branch.
                     "is_starter": None,
                     "depth_slot": None,
+                    # Always present, and `None` means "no call could be made" --
+                    # no fitted model, or a QB the artefact refused to score. A
+                    # frontend reading this key must treat None as "not offered",
+                    # never as a 0.0 line.
+                    "qb_passing_td": qb_call,
                     **props,
                 })
             except Exception as player_err:
