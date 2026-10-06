@@ -257,36 +257,44 @@ def _nb_alpha_nll(log_alpha: float, y: np.ndarray, mu: np.ndarray) -> float:
 def fit_qb_passing_td_model(X: pd.DataFrame, y: pd.Series) -> dict:
     """Fit BOTH count distributions on QB history and choose by log loss.
 
-    **MEASURED OUTCOME ON CFB (2026-10-04): NEGATIVE BINOMIAL WINS, and it is not
-    close to a tie.**
+    **MEASURED OUTCOME ON CFB: NEGATIVE BINOMIAL WINS, and it is not a tie.**
+    At the commit that fitted the artefact now in `models/` (seasons 2018-2025,
+    from the production `player_stats` cache):
 
-        usable QB rows      26,926   (of 34,675 QB rows; the rest are each
-                                      player's first week, with no prior week
-                                      to roll)
-        variance-to-mean     1.390346
-        in-sample log loss   negative binomial 1.366277   poisson 1.371619
-                             delta = 5.3e-03 in negative binomial's favour
-        alpha                7.36571588075843
+        usable QB rows      28,466
+        variance-to-mean     1.506
+        in-sample log loss   negative binomial 1.245850   poisson 1.251011
+                             delta = 5.2e-03 in negative binomial's favour
+        alpha                7.003
+
+    **THOSE NUMBERS ARE A RECORD OF ONE FIT, NOT A PROMISE ABOUT THE NEXT.**
+    `models/manifest.json`'s `qb_passing_td` entry carries the same figures for
+    whatever artefact is actually committed, and
+    `tests/test_qb_passing_td_artefact.py` asserts the manifest entry describes the
+    committed pickle -- so the pair cannot disagree with each other.
+
+    This paragraph is not that mechanism, and it is here as the cautionary half of
+    it. It previously read 26,926 rows / 1.390346 / alpha 7.36571588075843, measured
+    2026-10-04, and every one of those figures was **stale the moment the artefact
+    was refitted** with a season of data added. Nothing noticed, because prose is
+    not asserted by default. NFL learned the same lesson the hard way -- its
+    docstring described its artefact as it was *before* a retrain onto anytime-TD
+    label v2 features -- and the fix both times was to read the number back out of
+    the artefact rather than to write it down and hope.
 
     **NFL, by contrast, ended up at Poisson** -- its log losses were identical to
     seven decimal places, because once its mean was conditioned on usage features
     its QB passing TDs were UNDERdispersed and the NB2 fit drove alpha to its
-    ceiling. CFB is the opposite: a variance-to-mean of 1.390 is enough real
+    ceiling. CFB is the opposite: a variance-to-mean above 1.5 is enough real
     overdispersion for a dispersion parameter to explain, so alpha lands in the
-    interior at 7.37 rather than against a bound. That is why this docstring
-    asserts no outcome until the fit ran, and why the port stripped NFL's rather
-    than reworded it: **had it inherited "POISSON WINS", CFB would have shipped a
-    Poisson artefact that is measurably the worse of the two fits available**,
-    and nothing in the repository would have said so.
+    interior rather than against a bound. That is why this docstring asserts no
+    outcome until the fit ran, and why the port stripped NFL's rather than
+    reworded it: **had it inherited "POISSON WINS", CFB would have shipped a
+    Poisson artefact that is measurably the worse of the two fits available**, and
+    nothing in the repository would have said so.
 
-    Five times NFL's training rows (26,926 against 5,179) is also CFB's own
-    measurement, from the production `player_stats` cache across 2018-2026.
-
-    Every number above is read back out of the fitted artefact rather than
-    trusted, and the artefact is what a retrain replaces. NFL learned that the
-    hard way: its docstring described the artefact as it was *before* a retrain
-    onto anytime-TD label v2 features, and nothing noticed, because prose is not
-    asserted by default.
+    Five times NFL's training rows (28,466 against 5,179) is also CFB's own
+    measurement.
 
     Poisson first (it is the mean model and the NB mean is held at it), then the
     NB2 dispersion fitted by MLE on the same rows. Both are scored as mean
