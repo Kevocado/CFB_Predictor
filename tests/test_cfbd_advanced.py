@@ -40,3 +40,30 @@ def test_pull_is_resumable(tmp_path):
     first = client.calls
     pull_all(client, years=[2023, 2024], out_dir=tmp_path, budget=10)
     assert client.calls == first  # files exist, nothing refetched
+
+
+def test_atomic_write_on_failure_leaves_no_partial_file(tmp_path):
+    """A failed write (interrupted) leaves no advanced_{year}.json; next pull refetches."""
+    call_count = 0
+
+    class FailingClient:
+        def __init__(self):
+            self.should_fail = True
+
+        def get(self, path, params):
+            nonlocal call_count
+            call_count += 1
+            if self.should_fail:
+                self.should_fail = False
+                raise RuntimeError("simulated interruption")
+            return FIX
+
+    client = FailingClient()
+    with pytest.raises(RuntimeError):
+        pull_all(client, years=[2023], out_dir=tmp_path, budget=10)
+    # No file should exist after failed write
+    assert not (tmp_path / "advanced_2023.json").exists()
+    # Next attempt should refetch and succeed
+    pull_all(client, years=[2023], out_dir=tmp_path, budget=10)
+    assert (tmp_path / "advanced_2023.json").exists()
+    assert call_count == 2  # one failed, one succeeded

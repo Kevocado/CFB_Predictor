@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -52,6 +54,14 @@ def pull_all(client, years, out_dir, budget: int = 40) -> int:
             continue
         if used + 1 > budget:
             raise BudgetExceeded(f"{used} calls used; budget {budget}")
-        target.write_text(json.dumps(fetch_season_advanced(client, year)))
+        data = json.dumps(fetch_season_advanced(client, year))
+        # Atomic write: write to temp file in same directory, then replace.
+        # This prevents a partial file from being treated as complete on interruption.
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=out_dir, prefix=f"advanced_{year}.", suffix=".tmp", delete=False
+        ) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        os.replace(tmp_path, target)
         used += 1
     return used
