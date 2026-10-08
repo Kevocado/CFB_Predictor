@@ -63,3 +63,23 @@ def test_rest_days_are_measured_to_the_games_own_date_not_to_today():
 
 def test_the_row_has_the_feature_columns_in_order():
     assert list(build.build_features_for_game("T0", "T1", _season_games(), gameday="2026-09-05").index) == build.FEATURE_COLUMNS
+
+
+def test_nan_conference_game_for_different_conference_teams_serves_zero():
+    """NaN from the schedule is treated as missing and derived; teams in different conferences → 0.
+
+    This is the train/serve mismatch bug: NaN from the schedule is truthy (`bool(nan) == True`),
+    but training fills NaN with False. The fix treats NaN the same as None and derives it.
+    """
+    games = _season_games()
+    history = games[pd.to_datetime(games["gameday"]) < pd.Timestamp("2026-09-05")]
+    served = build.build_features_for_game("T0", "T5", history, gameday="2026-09-05", conference_game=float("nan"))
+    assert served["conference_game"] == 0, f"expected 0 for cross-conference teams, got {served['conference_game']}"
+
+
+def test_nan_conference_game_for_same_conference_teams_serves_one():
+    """NaN from the schedule is derived when teams share a conference; → 1."""
+    games = _season_games()
+    history = games[pd.to_datetime(games["gameday"]) < pd.Timestamp("2026-09-05")]
+    served = build.build_features_for_game("T0", "T1", history, gameday="2026-09-05", conference_game=float("nan"))
+    assert served["conference_game"] == 1, f"expected 1 for same-conference teams, got {served['conference_game']}"
