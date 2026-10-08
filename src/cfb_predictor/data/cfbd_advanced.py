@@ -55,13 +55,20 @@ def pull_all(client, years, out_dir, budget: int = 40) -> int:
         if used + 1 > budget:
             raise BudgetExceeded(f"{used} calls used; budget {budget}")
         data = json.dumps(fetch_season_advanced(client, year))
-        # Atomic write: write to temp file in same directory, then replace.
-        # This prevents a partial file from being treated as complete on interruption.
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=out_dir, prefix=f"advanced_{year}.", suffix=".tmp", delete=False
-        ) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        os.replace(tmp_path, target)
+        # Atomic write: write to temp file in same directory, then replace, so an interrupted
+        # write never leaves an advanced_{year}.json the next pull treats as done. The unlink is
+        # a no-op after a successful replace (the temp name is gone) and cleans up the temp file
+        # when the publication itself fails.
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=out_dir, prefix=f"advanced_{year}.", suffix=".tmp", delete=False
+            ) as tmp:
+                tmp_path = tmp.name  # before the write: a failed write still needs cleaning up
+                tmp.write(data)
+            os.replace(tmp_path, target)
+        finally:
+            if tmp_path is not None:
+                Path(tmp_path).unlink(missing_ok=True)
         used += 1
     return used

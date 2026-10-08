@@ -1,6 +1,8 @@
 import json
+import tempfile
 from pathlib import Path
 import pytest
+from cfb_predictor.data import cfbd_advanced
 from cfb_predictor.data.cfbd_advanced import BudgetExceeded, pull_all, to_team_game_frame
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "cfbd_advanced_sample.json").read_text())
@@ -42,28 +44,45 @@ def test_pull_is_resumable(tmp_path):
     assert client.calls == first  # files exist, nothing refetched
 
 
-def test_atomic_write_on_failure_leaves_no_partial_file(tmp_path):
-    """A failed write (interrupted) leaves no advanced_{year}.json; next pull refetches."""
-    call_count = 0
+def test_a_failed_write_publishes_nothing_and_leaves_no_temp_file(tmp_path, monkeypatch):
+    """The failure is injected during the WRITE, after partial output exists.
 
-    class FailingClient:
-        def __init__(self):
-            self.should_fail = True
+    Failing the fetch instead would pass even with a non-atomic write_text: nothing was
+    written yet, so there was no partial file to leave behind.
+    """
+    real_named_temp_file = tempfile.NamedTemporaryFile  # bound before the patch, else infinite recursion
 
-        def get(self, path, params):
-            nonlocal call_count
-            call_count += 1
-            if self.should_fail:
-                self.should_fail = False
-                raise RuntimeError("simulated interruption")
-            return FIX
+    class SlowNamedTemporaryFile:
+        """The real temp file, but writes only half the payload before failing."""
 
-    client = FailingClient()
-    with pytest.raises(RuntimeError):
+        def __init__(self, mode, dir, prefix, suffix, delete):
+            self._real = real_named_temp_file(
+                mode=mode, dir=dir, prefix=prefix, suffix=suffix, delete=delete
+            )
+
+        def __enter__(self):
+            return self  # `as tmp` must bind this wrapper, or tmp.write is the real write
+
+        @property
+        def name(self):
+            return self._real.name
+
+        def __exit__(self, *exc):
+            self._real.__exit__(*exc)
+
+        def write(self, data):
+            self._real.write(data[: len(data) // 2])
+            self._real.flush()
+            raise OSError("simulated interrupted write")
+
+    monkeypatch.setattr(cfbd_advanced.tempfile, "NamedTemporaryFile", SlowNamedTemporaryFile)
+    client = FakeClient()
+    with pytest.raises(OSError):
         pull_all(client, years=[2023], out_dir=tmp_path, budget=10)
-    # No file should exist after failed write
-    assert not (tmp_path / "advanced_2023.json").exists()
-    # Next attempt should refetch and succeed
-    pull_all(client, years=[2023], out_dir=tmp_path, budget=10)
-    assert (tmp_path / "advanced_2023.json").exists()
-    assert call_count == 2  # one failed, one succeeded
+
+    assert not (tmp_path / "advanced_2023.json").exists()  # nothing published
+    assert not list(tmp_path.glob("advanced_2023.*.tmp"))  # no temp file left behind
+
+    # Next attempt refetches and publishes.
+    pull_all(FakeClient(), years=[2023], out_dir=tmp_path, budget=10)
+    assert json.loads((tmp_path / "advanced_2023.json").read_text()) == FIX
