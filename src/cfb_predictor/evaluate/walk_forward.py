@@ -47,38 +47,44 @@ def _predict_margin_elo_batch(candidate: dict, df: pd.DataFrame) -> np.ndarray:
     )
 
 
-class _EloModelAdapter:
-    """Adapts the elo candidate's dict + free function to the model.predict(X)
-    interface residual_sigma expects, without ignoring the X it's given."""
+def _fit_predict(candidate: str, train_df: pd.DataFrame, val_df: pd.DataFrame, feature_cols: list[str], target: str = "margin") -> np.ndarray:
+    """Fit `candidate` on `train_df` and predict `target` for `val_df`. Nothing from `val_df` reaches the fit."""
+    if candidate == "elo":
+        if target != "margin":
+            raise ValueError("the elo candidate predicts the margin only")
+        return _predict_margin_elo_batch(game_outcome.fit_elo_candidate(train_df), val_df)
+    fit_fn = {"ridge": game_outcome.fit_margin_regression, "xgb": game_outcome.fit_xgb_margin}.get(candidate)
+    if fit_fn is None:
+        raise ValueError(f"Unknown candidate: {candidate!r}")
+    return fit_fn(train_df[feature_cols], train_df[target]).predict(val_df[feature_cols].fillna(0))
 
-    def __init__(self, candidate: dict):
-        self.candidate = candidate
 
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return _predict_margin_elo_batch(self.candidate, X)
+def _honest_sigma(candidate: str, train_df: pd.DataFrame, feature_cols: list[str], target: str = "margin") -> float:
+    """Sigma for a fold, from error the model has NOT been fitted on: the last TRAINING season is held out of an
+    inner fit on the seasons before it. A fold with a single training season has nothing to hold out and falls
+    back to the in-sample spread (optimistic; only the smallest folds ever take this branch)."""
+    seasons = sorted(train_df["season"].unique())
+    if len(seasons) < 2:
+        preds = _fit_predict(candidate, train_df, train_df, feature_cols, target)
+        return game_outcome.sigma_from_residuals(train_df[target].to_numpy(float) - preds)
+    inner_train = train_df[train_df["season"] != seasons[-1]]
+    inner_val = train_df[train_df["season"] == seasons[-1]]
+    preds = _fit_predict(candidate, inner_train, inner_val, feature_cols, target)
+    return game_outcome.sigma_from_residuals(inner_val[target].to_numpy(float) - preds)
+
+
+def oof_residuals(folds: list[dict], candidate: str, target: str = "margin") -> np.ndarray:
+    """Every validation season's residuals, each predicted by a model trained only on EARLIER seasons."""
+    pieces = []
+    for fold in folds:
+        preds = _fit_predict(candidate, fold["train_df"], fold["val_df"], fold["feature_cols"], target)
+        pieces.append(fold["val_df"][target].to_numpy(float) - preds)
+    return np.concatenate(pieces) if pieces else np.array([])
 
 
 def _predict_margins(candidate: str, train_df: pd.DataFrame, val_df: pd.DataFrame, feature_cols: list[str]):
-    X_train, y_train = train_df[feature_cols], train_df["margin"]
-    X_val = val_df[feature_cols]
-
-    if candidate == "elo":
-        model = game_outcome.fit_elo_candidate(train_df)
-        preds = _predict_margin_elo_batch(model, val_df)
-        sigma = game_outcome.residual_sigma(_EloModelAdapter(model), X_train, y_train)
-        return preds, sigma
-
-    if candidate == "ridge":
-        fit_fn = game_outcome.fit_margin_regression
-    elif candidate == "xgb":
-        fit_fn = game_outcome.fit_xgb_margin
-    else:
-        raise ValueError(f"Unknown candidate: {candidate!r}")
-
-    model = fit_fn(X_train, y_train)
-    preds = model.predict(X_val.fillna(0))
-    sigma = game_outcome.residual_sigma(model, X_train, y_train)
-    return preds, sigma
+    preds = _fit_predict(candidate, train_df, val_df, feature_cols, "margin")
+    return preds, _honest_sigma(candidate, train_df, feature_cols, "margin")
 
 
 def pooled_predictions(folds: list[dict], candidate: str) -> tuple[np.ndarray, np.ndarray]:

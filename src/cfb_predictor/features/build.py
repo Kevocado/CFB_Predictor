@@ -17,6 +17,7 @@ spent beating an FCS opponent.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from . import power_ratings, rest_days, rolling_form
@@ -80,69 +81,55 @@ def build_training_frame(
     return played, FEATURE_COLUMNS
 
 
-def build_features_for_game(home_team: str, away_team: str, games_df: pd.DataFrame) -> pd.Series:
-    """One live feature row for an upcoming home_team vs away_team game,
-    computed from every played game in games_df (ratings/rolling form as of
-    right now). conference_game defaults to 0 here -- api/routes.py knows
-    the real value from the live schedule row for a specific upcoming game
-    but this function only has the two team names, the same limitation
-    NFL's build_features_for_game already had for div_game (not fixed here,
-    to stay a near-verbatim port rather than a scope expansion)."""
-    ratings = power_ratings.final_ratings(games_df)
-    played = games_df[games_df["home_score"].notna() & games_df["away_score"].notna()]
+def build_features_for_game(
+    home_team: str, away_team: str, games_df: pd.DataFrame,
+    gameday: str | pd.Timestamp | None = None, conference_game: bool | int | None = None,
+) -> pd.Series:
+    """One feature row for an upcoming home_team vs away_team game, built by the SAME code that builds training rows.
 
-    def _recent_form(team: str) -> tuple[float, float]:
-        appearances = pd.concat(
-            [
-                played[played["home_team"] == team][["gameday", "home_score", "away_score"]].rename(
-                    columns={"home_score": "scored", "away_score": "allowed"}
-                ),
-                played[played["away_team"] == team][["gameday", "away_score", "home_score"]].rename(
-                    columns={"away_score": "scored", "home_score": "allowed"}
-                ),
-            ]
-        ).sort_values("gameday")
-        recent = appearances.tail(5)
-        if recent.empty:
-            return float("nan"), float("nan")
-        return float(recent["scored"].mean()), float(recent["allowed"].mean())
+    The upcoming game is appended to the PLAYED games (no result, its own date) and run through `_assemble`, so
+    ratings, rolling form and rest are computed exactly as for a training row. This used to be a second, hand-written
+    implementation with two defects: rest was measured from the last game to TODAY rather than to the game, and
+    `conference_game` was hard-coded to 0 although training fits it from the schedule (a dead coefficient at inference).
 
-    def _rest_days(team: str) -> float | None:
-        appearances = pd.concat(
-            [
-                played[played["home_team"] == team][["gameday"]],
-                played[played["away_team"] == team][["gameday"]],
-            ]
-        ).sort_values("gameday")
-        if appearances.empty:
-            return None
-        last_game = pd.to_datetime(appearances.iloc[-1]["gameday"])
-        # Real CFBD gamedays parse as tz-aware (UTC) timestamps; test
-        # fixtures use tz-naive ones. Strip tz so both compare cleanly
-        # against the tz-naive "now" below -- confirmed against real data
-        # in Task 17 (TypeError: Cannot subtract tz-naive and tz-aware).
-        if last_game.tzinfo is not None:
-            last_game = last_game.tz_localize(None)
-        return float((pd.Timestamp.now().normalize() - last_game).days)
+    `gameday` is the game's date (None = today). `conference_game` is the schedule's value for this game; when it is
+    not supplied it is derived from the two teams' conferences in `games_df`, and falls back to 0 only when neither
+    is known.
+    """
+    played = games_df[games_df["home_score"].notna() & games_df["away_score"].notna()].copy()
+    when = pd.Timestamp(gameday) if gameday is not None else pd.Timestamp.now().normalize()
+    if when.tzinfo is not None:
+        when = when.tz_localize(None)
+    if conference_game is None:
+        conference_game = _same_conference(home_team, away_team, games_df)
+    upcoming = {c: np.nan for c in played.columns}
+    upcoming.update({
+        "game_id": "__upcoming__", "gameday": when, "home_team": home_team, "away_team": away_team,
+        "home_score": np.nan, "away_score": np.nan, "conference_game": bool(conference_game),
+    })
+    if "season" in played.columns and played["season"].notna().any():
+        upcoming["season"] = played["season"].max()
+    frame = pd.concat([played, pd.DataFrame([upcoming])], ignore_index=True)
+    frame["gameday"] = pd.to_datetime(frame["gameday"], utc=True).dt.tz_localize(None)
+    row = _assemble(frame)
+    served = row[row["game_id"] == "__upcoming__"].iloc[0]
+    # What `_assemble` produced, in the declared order; `manifest.load_models` refuses any model whose fitted
+    # columns differ from this.
+    return served[[c for c in FEATURE_COLUMNS if c in served.index]]
 
-    home_scored, home_allowed = _recent_form(home_team)
-    away_scored, away_allowed = _recent_form(away_team)
-    home_rating = ratings.get(home_team, power_ratings.DEFAULT_START_RATING)
-    away_rating = ratings.get(away_team, power_ratings.DEFAULT_START_RATING)
-    home_rest = _rest_days(home_team)
-    away_rest = _rest_days(away_team)
 
-    return pd.Series(
-        {
-            "home_pregame_rating": home_rating,
-            "away_pregame_rating": away_rating,
-            "rating_diff": home_rating - away_rating,
-            "home_points_scored_roll": home_scored,
-            "home_points_allowed_roll": home_allowed,
-            "away_points_scored_roll": away_scored,
-            "away_points_allowed_roll": away_allowed,
-            "home_rest_days": home_rest if home_rest is not None else 7.0,
-            "away_rest_days": away_rest if away_rest is not None else 7.0,
-            "conference_game": 0,
-        }
-    )
+def _same_conference(home_team: str, away_team: str, games_df: pd.DataFrame) -> bool:
+    """Whether the two teams share a conference, read from the most recent row that names each team's conference."""
+    if not {"home_conference", "away_conference"} <= set(games_df.columns):
+        return False
+
+    def conference(team: str):
+        rows = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
+        for _, r in rows.iloc[::-1].iterrows():
+            c = r["home_conference"] if r["home_team"] == team else r["away_conference"]
+            if isinstance(c, str) and c:
+                return c
+        return None
+
+    h, a = conference(home_team), conference(away_team)
+    return h is not None and h == a

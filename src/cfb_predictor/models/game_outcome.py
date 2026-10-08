@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from sklearn.linear_model import Ridge
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 ELO_POINTS_PER_RATING_POINT = 1.0 / 25.0
@@ -31,8 +33,11 @@ def predict_margin_elo(candidate: dict, rating_diff: float, home_rest_days: floa
     return rating_diff * candidate["points_per_rating_point"] + 0.05 * (home_rest_days - away_rest_days)
 
 
-def fit_margin_regression(X_train: pd.DataFrame, y_margin: pd.Series) -> Ridge:
-    model = Ridge(alpha=1.0)
+def fit_margin_regression(X_train: pd.DataFrame, y_margin: pd.Series) -> Pipeline:
+    """Ridge on STANDARDISED features. The columns arrive in very different units (an Elo near 1500, points near 20,
+    rest days near 7); an L2 penalty on raw columns shrinks the small-unit features hardest, so which feature set
+    "wins" would depend on its units. Standardising inside the model makes predictions invariant to rescaling."""
+    model = make_pipeline(StandardScaler(), Ridge(alpha=1.0))
     model.fit(X_train.fillna(0), y_margin)
     return model
 
@@ -52,6 +57,19 @@ def residual_sigma(model, X_val: pd.DataFrame, y_val: pd.Series) -> float:
     if len(residuals) == 0:
         return 1.0
     return float(np.std(residuals, ddof=1)) if len(residuals) > 1 else float(np.std(residuals) or 1.0)
+
+
+def sigma_from_residuals(residuals) -> float:
+    """Spread of OUT-OF-SAMPLE residuals: the figure every cover/over/win probability divides by.
+
+    A model's error on its own training rows is optimistic (XGBoost most of all), so a sigma fitted there makes
+    every published probability overconfident. This takes residuals that were never fitted on.
+    """
+    r = np.asarray(residuals, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) == 0:
+        return 1.0
+    return float(np.std(r, ddof=1)) if len(r) > 1 else float(np.std(r) or 1.0)
 
 
 def margin_to_probabilities(
