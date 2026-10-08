@@ -83,7 +83,7 @@ def build_training_frame(
 
 def build_features_for_game(
     home_team: str, away_team: str, games_df: pd.DataFrame,
-    gameday: str | pd.Timestamp | None = None, conference_game: bool | int | None = None,
+    gameday: str | pd.Timestamp | None = None, conference_game: bool | int | float | None = None,
 ) -> pd.Series:
     """One feature row for an upcoming home_team vs away_team game, built by the SAME code that builds training rows.
 
@@ -94,13 +94,13 @@ def build_features_for_game(
 
     `gameday` is the game's date (None = today). `conference_game` is the schedule's value for this game; when it is
     not supplied it is derived from the two teams' conferences in `games_df`, and falls back to 0 only when neither
-    is known.
+    is known. `NaN` is treated the same as missing and is also derived.
     """
     played = games_df[games_df["home_score"].notna() & games_df["away_score"].notna()].copy()
     when = pd.Timestamp(gameday) if gameday is not None else pd.Timestamp.now().normalize()
     if when.tzinfo is not None:
         when = when.tz_localize(None)
-    if conference_game is None:
+    if conference_game is None or pd.isna(conference_game):
         conference_game = _same_conference(home_team, away_team, games_df)
     upcoming = {c: np.nan for c in played.columns}
     upcoming.update({
