@@ -80,9 +80,12 @@ def test_a_failed_write_publishes_nothing_and_leaves_no_temp_file(tmp_path, monk
     with pytest.raises(OSError):
         pull_all(client, years=[2023], out_dir=tmp_path, budget=10)
 
+    # Undo the monkeypatch so the second call uses the real temp file
+    monkeypatch.undo()
+
     assert not (tmp_path / "advanced_2023.json").exists()  # nothing published
     assert not list(tmp_path.glob("advanced_2023.*.tmp"))  # no temp file left behind
 
-    # Next attempt refetches and publishes.
+    monkeypatch.undo()  # the retry must write through the real NamedTemporaryFile
     pull_all(FakeClient(), years=[2023], out_dir=tmp_path, budget=10)
     assert json.loads((tmp_path / "advanced_2023.json").read_text()) == FIX
