@@ -121,6 +121,7 @@ def build_training_frame(
 def build_features_for_game(
     home_team: str, away_team: str, games_df: pd.DataFrame,
     gameday: str | pd.Timestamp | None = None, conference_game: bool | int | float | None = None,
+    blocks: tuple[str, ...] = DEFAULT_BLOCKS, aux: Aux | None = None,
 ) -> pd.Series:
     """One feature row for an upcoming home_team vs away_team game, built by the SAME code that builds training rows.
 
@@ -131,7 +132,8 @@ def build_features_for_game(
 
     `gameday` is the game's date (None = today). `conference_game` is the schedule's value for this game; when it is
     not supplied it is derived from the two teams' conferences in `games_df`, and falls back to 0 only when neither
-    is known. `NaN` is treated the same as missing and is also derived.
+    is known. `NaN` is treated the same as missing and is also derived. `blocks` and `aux` mirror `build_training_frame`
+    so the same feature blocks (e.g., epa) are assembled for serving as were used at training.
     """
     played = games_df[games_df["home_score"].notna() & games_df["away_score"].notna()].copy()
     when = pd.Timestamp(gameday) if gameday is not None else pd.Timestamp.now().normalize()
@@ -148,11 +150,11 @@ def build_features_for_game(
         upcoming["season"] = played["season"].max()
     frame = pd.concat([played, pd.DataFrame([upcoming])], ignore_index=True)
     frame["gameday"] = pd.to_datetime(frame["gameday"], utc=True).dt.tz_localize(None)
-    row = _assemble(frame)
+    row = _assemble(frame, blocks, aux)
     served = row[row["game_id"] == "__upcoming__"].iloc[0]
     # What `_assemble` produced, in the declared order; `manifest.load_models` refuses any model whose fitted
     # columns differ from this.
-    return served[[c for c in FEATURE_COLUMNS if c in served.index]]
+    return served[[c for c in feature_columns(blocks) if c in served.index]]
 
 
 def _same_conference(home_team: str, away_team: str, games_df: pd.DataFrame) -> bool:
