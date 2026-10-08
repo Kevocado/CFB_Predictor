@@ -19,8 +19,31 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from dataclasses import dataclass
 
-from . import power_ratings, rest_days, rolling_form
+from . import epa, power_ratings, priors, rest_days, rolling_form
+
+#: Feature BLOCKS beyond the ten base columns. A block joins DEFAULT_BLOCKS only in the PR that shows it clears the
+#: evaluation bar (paired-bootstrap intervals + calibration gap, on identical held-out games).
+BLOCK_COLUMNS: dict[str, list[str]] = {"epa": epa.epa_columns(), "priors": []}
+DEFAULT_BLOCKS: tuple[str, ...] = ()
+
+
+def feature_columns(blocks: tuple[str, ...] = DEFAULT_BLOCKS) -> list[str]:
+    unknown = [b for b in blocks if b not in BLOCK_COLUMNS]
+    if unknown:
+        raise ValueError(f"unknown feature blocks: {unknown}; known: {sorted(BLOCK_COLUMNS)}")
+    cols = list(FEATURE_COLUMNS)
+    for block in blocks:
+        cols += BLOCK_COLUMNS[block]
+    return cols
+
+
+@dataclass
+class Aux:
+    """The extra inputs the blocks read. `efficiency` is cfbd_advanced.to_team_game_frame() output."""
+    efficiency: pd.DataFrame | None = None
+
 
 FEATURE_COLUMNS = [
     "home_pregame_rating", "away_pregame_rating", "rating_diff",
@@ -55,7 +78,7 @@ def _is_fbs_game(df: pd.DataFrame, fbs_teams: dict[int, set[str]] | None) -> pd.
     return pd.Series(True, index=df.index)
 
 
-def _assemble(games_df: pd.DataFrame) -> pd.DataFrame:
+def _assemble_base(games_df: pd.DataFrame) -> pd.DataFrame:
     df = power_ratings.compute_pregame_ratings(games_df)
     df = rolling_form.add_rolling_form(df)
     df = rest_days.add_rest_days(df)
@@ -68,17 +91,31 @@ def _assemble(games_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _assemble(games_df: pd.DataFrame, blocks: tuple[str, ...] = (), aux: Aux | None = None) -> pd.DataFrame:
+    df = _assemble_base(games_df)
+    if "epa" in blocks:
+        if aux is None or aux.efficiency is None:
+            raise ValueError("the epa block needs aux.efficiency; refusing to default it to zeros")
+        df = epa.add_epa_features(df, aux.efficiency)
+    if "priors" in blocks:
+        # priors are merged in build_training_frame from the preseason_prior frame
+        pass
+    return df
+
+
 def build_training_frame(
-    games_df: pd.DataFrame, fbs_teams: dict[int, set[str]] | None = None
+    games_df: pd.DataFrame, fbs_teams: dict[int, set[str]] | None = None,
+    blocks: tuple[str, ...] = DEFAULT_BLOCKS, aux: Aux | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    df = _assemble(games_df)
+    columns = feature_columns(blocks)
+    df = _assemble(games_df, blocks, aux)
     df["is_fbs_game"] = _is_fbs_game(df, fbs_teams)
     played = df[
         df["home_score"].notna() & df["away_score"].notna() & df["is_fbs_game"]
     ].reset_index(drop=True)
     played["margin"] = played["home_score"] - played["away_score"]
     played["total_points"] = played["home_score"] + played["away_score"]
-    return played, FEATURE_COLUMNS
+    return played, columns
 
 
 def build_features_for_game(
