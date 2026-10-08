@@ -476,7 +476,7 @@ def _stub_live_rating_gap(monkeypatch, rating_diff=7.0):
     )
     monkeypatch.setattr(
         facts_mod.routes.feature_build, "build_features_for_game",
-        lambda home, away, history: pd.Series({"rating_diff": rating_diff}),
+        lambda home, away, history, gameday=None, conference_game=None: pd.Series({"rating_diff": rating_diff}),
     )
 
 

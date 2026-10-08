@@ -321,7 +321,9 @@ def _drivers(game: dict, season: int, home_team: str, away_team: str, live_ok: b
         try:
             history = routes._load_game_history(season)
             history = history[history["game_id"].astype(str) != str(game["game_id"])]
-            row = routes.feature_build.build_features_for_game(home_team, away_team, history)
+            row = routes.feature_build.build_features_for_game(
+                home_team, away_team, history, gameday=game.get("gameday"), conference_game=game.get("conference_game"),
+            )
             rating_diff = _num(row.get("rating_diff"))
         except Exception:
             logger.info("driver features unavailable for game_id=%s", game.get("game_id"))

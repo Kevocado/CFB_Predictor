@@ -123,6 +123,14 @@ def _fbs_teams_by_season(seasons: list[int]) -> dict[int, set[str]]:
     return {season: set(games_data.fetch_fbs_teams(season)["team"]) for season in seasons}
 
 
+def fit_sigmas(folds: list[dict], chosen: str) -> tuple[float, float]:
+    """(margin sigma, total sigma) from pooled out-of-fold residuals: the chosen game model for the margin and the
+    XGBoost total model for the total, each predicted on seasons it was never trained on."""
+    sigma = game_outcome.sigma_from_residuals(walk_forward.oof_residuals(folds, chosen, "margin"))
+    total_sigma = game_outcome.sigma_from_residuals(walk_forward.oof_residuals(folds, "xgb", "total_points"))
+    return sigma, total_sigma
+
+
 def train_all(seasons: list[int] | None = None) -> dict:
     """Fit all models, persist their artifacts, and return their manifest."""
     MODELS_DIR.mkdir(exist_ok=True, parents=True)
@@ -152,20 +160,10 @@ def train_all(seasons: list[int] | None = None) -> dict:
     else:
         game_model = game_outcome.fit_xgb_margin(X_train, y_margin)
 
-    if chosen == "elo":
-        margin_preds = train_df.apply(
-            lambda r: game_outcome.predict_margin_elo(
-                game_model, r["rating_diff"], r["home_rest_days"], r["away_rest_days"]
-            ),
-            axis=1,
-        )
-        sigma_model = type("_", (), {"predict": lambda self, X: margin_preds.to_numpy()})()
-        sigma = game_outcome.residual_sigma(sigma_model, X_train, y_margin)
-    else:
-        sigma = game_outcome.residual_sigma(game_model, X_train, y_margin)
-
+    # Sigma from OUT-OF-SAMPLE residuals (the pooled walk-forward folds), never from the training rows the model
+    # was fitted on: an in-sample sigma is optimistic and made every published probability overconfident.
+    sigma, total_sigma = fit_sigmas(folds, chosen)
     total_model = game_outcome.fit_xgb_margin(X_train, y_total)
-    total_sigma = game_outcome.residual_sigma(total_model, X_train, y_total)
 
     _save_pickle(game_model, _artifact_path(GAME_MODEL_FILENAME))
     _save_pickle(total_model, _artifact_path(TOTAL_MODEL_FILENAME))
