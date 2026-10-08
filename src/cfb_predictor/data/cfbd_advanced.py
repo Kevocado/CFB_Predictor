@@ -37,7 +37,10 @@ def to_team_game_frame(rows: list[dict]) -> pd.DataFrame:
                 "epa_off": o["epa"], "epa_off_pass": o["epa_pass"], "epa_off_rush": o["epa_rush"], "success_off": o["success"],
                 "epa_def": d_["epa"], "epa_def_pass": d_["epa_pass"], "epa_def_rush": d_["epa_rush"], "success_def": d_["success"],
             })
-    return pd.DataFrame(out)
+    return pd.DataFrame(out, columns=[
+        "game_id", "team", "epa_off", "epa_def", "epa_off_pass", "epa_off_rush",
+        "epa_def_pass", "epa_def_rush", "success_off", "success_def",
+    ])
 
 
 def fetch_season_advanced(client, year: int) -> list[dict]:

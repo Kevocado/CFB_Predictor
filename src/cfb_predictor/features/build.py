@@ -98,8 +98,7 @@ def _assemble(games_df: pd.DataFrame, blocks: tuple[str, ...] = (), aux: Aux | N
             raise ValueError("the epa block needs aux.efficiency; refusing to default it to zeros")
         df = epa.add_epa_features(df, aux.efficiency)
     if "priors" in blocks:
-        # priors are merged in build_training_frame from the preseason_prior frame
-        pass
+        raise ValueError("the priors block is registered but not wired into _assemble yet")
     return df
 
 
