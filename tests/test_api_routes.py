@@ -106,7 +106,7 @@ def test_predict_game_from_models_includes_sigma_and_total_sigma(monkeypatch):
 
     monkeypatch.setattr(
         routes.feature_build, "build_features_for_game",
-        lambda home, away, games_df, gameday=None, conference_game=None: pd.Series({"rating_diff": 50.0, "home_rest_days": 7.0, "away_rest_days": 7.0}),
+        lambda home, away, games_df, gameday=None, conference_game=None, **_: pd.Series({"rating_diff": 50.0, "home_rest_days": 7.0, "away_rest_days": 7.0}),
     )
     models = {
         "feature_cols": ["rating_diff", "home_rest_days", "away_rest_days"],

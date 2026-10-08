@@ -13,6 +13,7 @@ from ..data import games as games_data
 from ..data import player_stats
 from ..evaluate import walk_forward
 from ..features import build as feature_build
+from ..features.build import DEFAULT_BLOCKS
 from ..features import player_usage
 from . import game_outcome, player_props, qb_passing_td
 
@@ -131,14 +132,14 @@ def fit_sigmas(folds: list[dict], chosen: str) -> tuple[float, float]:
     return sigma, total_sigma
 
 
-def train_all(seasons: list[int] | None = None) -> dict:
+def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAULT_BLOCKS) -> dict:
     """Fit all models, persist their artifacts, and return their manifest."""
     MODELS_DIR.mkdir(exist_ok=True, parents=True)
     seasons = seasons or games_data.default_completed_seasons(n=DEFAULT_TRAIN_SEASONS)
 
     games_df = games_data.load_training_data(seasons)
     fbs_teams = _fbs_teams_by_season(seasons)
-    train_df, feature_cols = feature_build.build_training_frame(games_df, fbs_teams=fbs_teams)
+    train_df, feature_cols = feature_build.build_training_frame(games_df, fbs_teams=fbs_teams, blocks=blocks)
 
     folds = walk_forward.prepare_folds(games_df, fbs_teams=fbs_teams, min_train_seasons=max(1, len(seasons) - 2))
     if not folds:
@@ -207,6 +208,7 @@ def train_all(seasons: list[int] | None = None) -> dict:
         "total_sigma": total_sigma,
         "yardage_metrics": yardage_metrics,
         **({"qb_passing_td": qb_metric} if qb_metric else {}),
+        "feature_blocks": list(blocks),
         "artifact_fingerprint": artifact_fingerprint(player_feature_cols),
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
@@ -379,6 +381,7 @@ def load_models() -> dict:
         "player_models": player_models,
         "feature_cols": manifest["feature_cols"],
         "player_feature_cols": manifest["player_feature_cols"],
+        "feature_blocks": manifest.get("feature_blocks", DEFAULT_BLOCKS),
     }
 
 

@@ -29,6 +29,7 @@ from ..data import games as games_data
 from ..data import player_stats, sportsbook_api
 from ..data import advanced_stats
 from ..features import build as feature_build
+from ..features.build import DEFAULT_BLOCKS
 from ..features import player_usage, power_ratings
 from ..models import game_outcome, manifest, player_props, qb_passing_td, season_projection
 from ..odds import value_bets
@@ -357,7 +358,14 @@ def _predict_game_from_models(
     spread_line: float | None = None, total_line: float | None = None,
     gameday=None, conference_game=None,
 ) -> dict:
-    feature_row = feature_build.build_features_for_game(home, away, games_df, gameday=gameday, conference_game=conference_game)
+    # Whatever blocks the fitted model was trained on, in the same order it recorded them. `aux` stays
+    # None until a block joins DEFAULT_BLOCKS: `_assemble` refuses a block with no aux rather than
+    # zero-filling it, so an epa-fitted model fails loudly instead of serving a fabricated row.
+    blocks = tuple(models.get("feature_blocks", DEFAULT_BLOCKS))
+    feature_row = feature_build.build_features_for_game(
+        home, away, games_df, gameday=gameday, conference_game=conference_game,
+        blocks=blocks, aux=None,
+    )
     feature_cols = models["feature_cols"]
     X = feature_row.reindex(feature_cols).fillna(0)
 

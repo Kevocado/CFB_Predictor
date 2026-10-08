@@ -69,7 +69,9 @@ def sigma_from_residuals(residuals) -> float:
     r = r[np.isfinite(r)]
     if len(r) == 0:
         return 1.0
-    return float(np.std(r, ddof=1)) if len(r) > 1 else float(np.std(r) or 1.0)
+    # A floor, not just `or 1.0`: identical residuals give std 0, and a zero sigma makes
+    # every probability in margin_to_probabilities a divide-by-zero.
+    return max(float(np.std(r, ddof=1)) if len(r) > 1 else float(np.std(r)), 1.0)
 
 
 def margin_to_probabilities(
