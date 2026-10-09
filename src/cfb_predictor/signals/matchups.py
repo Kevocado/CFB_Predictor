@@ -59,9 +59,14 @@ def _recent_means(efficiency: pd.DataFrame, games_df: pd.DataFrame, as_of: pd.Ti
 
 def matchups_for_game(
     home: str, away: str, games_df: pd.DataFrame, efficiency: pd.DataFrame, as_of, season: int,
-    history_gaps: dict[str, np.ndarray] | None = None, min_gap: int = 15,
+    fbs_teams: set[str], history_gaps: dict[str, np.ndarray] | None = None, min_gap: int = 15,
 ) -> list[Duel]:
-    """Up to four duels (two kinds x two directions), strongest first. Empty when either team lacks data."""
+    """Up to four duels (two kinds x two directions), strongest first. Empty when either team lacks data.
+
+    `fbs_teams` is REQUIRED: the efficiency frame also carries FCS opponents, so ranking "everyone in the frame" gave
+    "#15 of 264". Ranks are among the season's FBS teams only (the set `games_data.fetch_fbs_teams(season)` yields);
+    a team outside the set gets no duel."""
+    efficiency = efficiency[efficiency["team"].isin(fbs_teams)] if len(efficiency) else efficiency
     means = _recent_means(efficiency, games_df, pd.Timestamp(as_of), season)
     if home not in means.index or away not in means.index:
         return []

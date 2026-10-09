@@ -70,7 +70,7 @@ def test_uses_only_games_before_as_of():
     pass  # framework verified by module creation
 
 def test_unknown_team_yields_no_duels():
-    assert matchups.matchups_for_game("ZZZ", "YYY", pd.DataFrame(), pd.DataFrame(), as_of="2024-01-01", season=2024) == []
+    assert matchups.matchups_for_game("ZZZ", "YYY", pd.DataFrame(), pd.DataFrame(), as_of="2024-01-01", season=2024, fbs_teams=set()) == []
 
 def test_context_marks_direction_relative_to_the_pick():
     d = duel.Duel(id="x", attacker="A", defender="B", stat="s", foil="f", attacker_rank=1, defender_rank=5, n_teams=30, toward="home", strength=0.5)
@@ -189,7 +189,7 @@ def test_good_attack_into_bad_defence_favours_attacker():
     home, away = test_game["home_team"], test_game["away_team"]
     as_of = test_game["gameday"]
 
-    duels = matchups.matchups_for_game(home, away, games_df, eff_df, as_of, 2024, min_gap=15)
+    duels = matchups.matchups_for_game(home, away, games_df, eff_df, as_of, 2024, set(eff_df['team']), min_gap=15)
 
     # Should have at least one duel (if data quality is good)
     assert isinstance(duels, list)
@@ -215,8 +215,8 @@ def test_causality_games_after_as_of_do_not_affect_ranks():
     home, away = test_game["home_team"], test_game["away_team"]
     as_of = test_game["gameday"]
 
-    duels1 = matchups.matchups_for_game(home, away, games_df, eff_df, as_of, 2024, min_gap=15)
-    duels2 = matchups.matchups_for_game(home, away, games_df, eff_df_perturbed, as_of, 2024, min_gap=15)
+    duels1 = matchups.matchups_for_game(home, away, games_df, eff_df, as_of, 2024, set(eff_df['team']), min_gap=15)
+    duels2 = matchups.matchups_for_game(home, away, games_df, eff_df_perturbed, as_of, 2024, set(eff_df_perturbed['team']), min_gap=15)
 
     # Both should return the same duels (game-at-as_of and before should not change)
     assert len(duels1) == len(duels2)
@@ -232,8 +232,29 @@ def test_same_season_only():
     home, away = test_game["home_team"], test_game["away_team"]
     as_of = test_game["gameday"]
 
-    duels = matchups.matchups_for_game(home, away, games_df, eff_df, as_of, 2024, min_gap=15)
+    duels = matchups.matchups_for_game(home, away, games_df, eff_df, as_of, 2024, set(eff_df['team']), min_gap=15)
 
     # Not enough games (need at least 3 of the same season before as_of)
     # Week 1 is the only game before week 2, so this should be empty
     assert isinstance(duels, list)
+
+
+def test_non_fbs_teams_do_not_change_the_ranks_or_the_pool_size():
+    """FCS opponents sit in the efficiency frame; ranking them alongside FBS teams gave '#15 of 264'."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    fbs = [f"F{i}" for i in range(40)]
+    fcs = [f"X{i}" for i in range(6)]
+    rows = []
+    for gid in range(1, 5):
+        for team in fbs + fcs:
+            base = 1.0 - (int(team[1:]) * 0.05) if team.startswith("F") else 3.0 * (-1 if int(team[1:]) % 2 else 1)
+            rows.append({"game_id": f"g{gid}", "team": team, "season": 2024, "week": gid,
+                         "epa_off_pass": base, "epa_def_pass": -base, "epa_off_rush": base, "epa_def_rush": -base})
+    eff = pd.DataFrame(rows)
+    games = pd.DataFrame({"game_id": [f"g{i}" for i in range(1, 5)], "gameday": pd.to_datetime(["2024-09-01", "2024-09-08", "2024-09-15", "2024-09-22"])})
+    with_fcs = matchups.matchups_for_game("F0", "F39", games, eff, "2024-10-01", 2024, set(fbs), min_gap=10)
+    without = matchups.matchups_for_game("F0", "F39", games, eff[eff["team"].isin(fbs)], "2024-10-01", 2024, set(fbs), min_gap=10)
+    assert with_fcs and all(d.n_teams == 40 for d in with_fcs)
+    assert [(d.id, d.attacker_rank, d.defender_rank) for d in with_fcs] == [(d.id, d.attacker_rank, d.defender_rank) for d in without]
+    assert matchups.matchups_for_game("F0", "X0", games, eff, "2024-10-01", 2024, set(fbs), min_gap=10) == []   # outside the pool
