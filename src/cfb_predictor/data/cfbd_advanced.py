@@ -32,13 +32,19 @@ def to_team_game_frame(rows: list[dict]) -> pd.DataFrame:
             continue  # a game with one side missing cannot give defence columns; skip, do not guess
         for me, opp in (pair, pair[::-1]):
             o, d_ = _side(me["offense"]), _side(opp["offense"])  # my defence = what the opponent's offence did to me
+            # `season` and `week` are carried through from the CFBD row so a caller can
+            # subset by season without re-deriving it from the game id (CFBD ids like
+            # 400547640 do NOT begin with the calendar year -- the 2014 file's first id
+            # is 400547640 and the 2025 file's is 401752665, so `game_id[:4]` is wrong).
             out.append({
                 "game_id": str(gid), "team": me["team"],
+                "season": me.get("season"), "week": me.get("week"),
                 "epa_off": o["epa"], "epa_off_pass": o["epa_pass"], "epa_off_rush": o["epa_rush"], "success_off": o["success"],
                 "epa_def": d_["epa"], "epa_def_pass": d_["epa_pass"], "epa_def_rush": d_["epa_rush"], "success_def": d_["success"],
             })
     return pd.DataFrame(out, columns=[
-        "game_id", "team", "epa_off", "epa_def", "epa_off_pass", "epa_off_rush",
+        "game_id", "team", "season", "week",
+        "epa_off", "epa_def", "epa_off_pass", "epa_off_rush",
         "epa_def_pass", "epa_def_rush", "success_off", "success_def",
     ])
 
@@ -75,3 +81,68 @@ def pull_all(client, years, out_dir, budget: int = 40) -> int:
                 Path(tmp_path).unlink(missing_ok=True)
         used += 1
     return used
+
+DEFAULT_OUT_DIR = Path(__file__).resolve().parents[3] / "data" / "cfbd"
+DEFAULT_YEARS = list(range(2014, 2026))
+
+
+def _client(key: str):
+    """A CFBD ApiClient configured with the key. The key is read from the environment
+    only; it is never logged, echoed or written to a file."""
+    import cfbd
+
+    config = cfbd.Configuration(access_token=key)
+    return cfbd.ApiClient(config)
+
+
+def _load_rows(path: Path) -> list[dict]:
+    with open(path) as f:
+        return json.load(f)
+
+
+def efficiency_frame_from_disk(out_dir: Path = None, years=None) -> pd.DataFrame:
+    """to_team_game_frame() over the already-pulled JSON files, for callers that must
+    not spend API calls (the block_eval run reads these, never the network)."""
+    out_dir = Path(out_dir or DEFAULT_OUT_DIR)
+    years = list(years or DEFAULT_YEARS)
+    frames = []
+    for year in years:
+        path = out_dir / f"advanced_{year}.json"
+        if not path.exists():
+            continue
+        frames.append(to_team_game_frame(_load_rows(path)))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def main() -> int:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Pull CFBD game-level advanced stats for a set of years into committed JSON."
+    )
+    parser.add_argument("--years", nargs="+", type=int, default=DEFAULT_YEARS)
+    parser.add_argument("--out-dir", type=str, default=str(DEFAULT_OUT_DIR))
+    parser.add_argument("--budget", type=int, default=40)
+    args = parser.parse_args()
+
+    key = os.environ.get("CFBD_API_KEY")
+    if not key:
+        # Never print the key or any part of it; the absence is the only thing reportable.
+        print("CFBD_API_KEY is not set; nothing to do", file=sys.stderr)
+        return 2
+
+    already = sum(1 for y in args.years if (Path(args.out_dir) / f"advanced_{y}.json").exists())
+    print(f"requested years: {sorted(args.years)}")
+    print(f"already on disk: {already} of {len(args.years)}")
+    with _client(key) as client:
+        used = pull_all(client, args.years, args.out_dir, budget=args.budget)
+    calls_this_run = used
+    print(f"API calls made this run: {calls_this_run}")
+    print(f"API calls saved by existing files: {already}")
+    print(f"total API calls for the whole pull (this run + saved): {calls_this_run + already}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
