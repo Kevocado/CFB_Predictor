@@ -56,7 +56,7 @@ if "priors" in blocks:
     raise ValueError("the priors block is registered but not wired into _assemble yet")
 ```
 
-This is a hard fact in `src/cfb_predictor/features/build.py`, not an environment problem: the
+This is a hard fact in `src/cfb_predictor/features/build.py` (line 101), not an environment problem: the
 block is *registered* in `BLOCK_COLUMNS` with an **empty column list** (`{"priors": []}`), so there
 is no feature for it to add and nothing for the model to fit. Wiring it is a separate, larger
 change (it needs a real preseason-prior source and its columns designed); it is out of scope for
