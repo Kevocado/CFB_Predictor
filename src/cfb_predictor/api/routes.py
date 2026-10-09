@@ -961,7 +961,12 @@ def retrain():
 def _attach_game_id(stats_df: pd.DataFrame, games_df: pd.DataFrame) -> pd.DataFrame:
     """Join weekly player stats to the game_id of the game each row's
     player actually played in, matched by season/week/team -- weekly
-    stats carry a team and week but no game_id of their own."""
+    stats carry a team and week but no game_id of their own -- unless the data
+    layer already supplied one (`player_stats.KEEP_COLUMNS` includes `game_id`
+    now), in which case that exact id is kept: merging a second `game_id` in
+    would produce `game_id_x`/`game_id_y` and no `game_id` at all."""
+    if "game_id" in stats_df.columns:
+        return stats_df
     if stats_df.empty or games_df.empty:
         return stats_df.iloc[0:0]
     home = games_df[["game_id", "season", "week", "home_team"]].rename(columns={"home_team": "recent_team"})
