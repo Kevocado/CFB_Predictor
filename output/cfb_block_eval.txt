@@ -1,0 +1,17 @@
+Loading CFB data for seasons [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]...
+efficiency rows: 25754 covering seasons [np.int64(2014), np.int64(2015), np.int64(2016), np.int64(2017), np.int64(2018), np.int64(2019), np.int64(2020), np.int64(2021), np.int64(2022), np.int64(2023), np.int64(2024), np.int64(2025)]
+Loaded 10373 games. Evaluating: epa, priors
+
+Evaluating block: epa...
+Evaluating block: priors...
+  -> NOT EVALUATED: block 'priors' cannot be built: the priors block is registered but not wired into _assemble yet
+
+====================================================================================
+CFB BLOCK EVALUATION RESULTS
+====================================================================================
+Block           N     MAE d            MAE 95% CI   Brier d          Brier 95% CI              Gap d CI Clears
+--------------------------------------------------------------------------------------------------------------
+epa          7560  +0.00420  [-0.05329, +0.06109]  -0.00013  [-0.00109, +0.00084]  [-0.01573, +0.00663]     No
+priors      not evaluated
+====================================================================================
+Sign convention: delta = base - block, so POSITIVE means the block is better.

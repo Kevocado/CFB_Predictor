@@ -22,8 +22,13 @@ def prepare_folds(
     games_df: pd.DataFrame,
     fbs_teams: dict[int, set[str]] | None = None,
     min_train_seasons: int = 2,
+    blocks: tuple[str, ...] = (),
+    aux=None,
 ) -> list[dict]:
-    df, feature_cols = build_training_frame(games_df, fbs_teams=fbs_teams)
+    # `blocks`/`aux` are forwarded to build_training_frame so a fold can be built with the
+    # epa block on. Without this the blocks argument was dead weight: _assemble() would wire
+    # epa from aux.efficiency, but nothing could ever reach it from here.
+    df, feature_cols = build_training_frame(games_df, fbs_teams=fbs_teams, blocks=blocks, aux=aux)
     seasons = sorted(df["season"].unique())
 
     folds = []
