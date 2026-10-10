@@ -25,7 +25,7 @@ from . import epa, power_ratings, priors, rest_days, rolling_form
 
 #: Feature BLOCKS beyond the ten base columns. A block joins DEFAULT_BLOCKS only in the PR that shows it clears the
 #: evaluation bar (paired-bootstrap intervals + calibration gap, on identical held-out games).
-BLOCK_COLUMNS: dict[str, list[str]] = {"epa": epa.epa_columns(), "priors": []}
+BLOCK_COLUMNS: dict[str, list[str]] = {"epa": epa.epa_columns(), "priors": priors.prior_columns()}
 DEFAULT_BLOCKS: tuple[str, ...] = ()
 
 
@@ -98,7 +98,7 @@ def _assemble(games_df: pd.DataFrame, blocks: tuple[str, ...] = (), aux: Aux | N
             raise ValueError("the epa block needs aux.efficiency; refusing to default it to zeros")
         df = epa.add_epa_features(df, aux.efficiency)
     if "priors" in blocks:
-        raise ValueError("the priors block is registered but not wired into _assemble yet")
+        df = priors.add_priors(df)
     return df
 
 
@@ -146,7 +146,10 @@ def build_features_for_game(
         "home_score": np.nan, "away_score": np.nan, "conference_game": bool(conference_game),
     })
     if "season" in played.columns and played["season"].notna().any():
-        upcoming["season"] = played["season"].max()
+        # A game from July on in a calendar year the data has not reached yet opens a new season (the priors block
+        # keys on it); January bowls stay in the season that is already in the data.
+        season = played["season"].max()
+        upcoming["season"] = when.year if when.year > season and when.month >= 7 else season
     frame = pd.concat([played, pd.DataFrame([upcoming])], ignore_index=True)
     frame["gameday"] = pd.to_datetime(frame["gameday"], utc=True).dt.tz_localize(None)
     row = _assemble(frame, blocks, aux)

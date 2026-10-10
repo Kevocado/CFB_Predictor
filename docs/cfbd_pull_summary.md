@@ -49,19 +49,26 @@ season strictly before it, and base / with-block runs see identical held-out gam
 block`, so positive is better. EPA's point estimates are flat-to-slightly-positive and every
 interval straddles zero — no evidence it helps, no evidence it hurts. It does **not** clear.
 
-## `priors` block: **not evaluated — not wired**
+## `priors` block: wired, evaluated, **left OFF**
 
-```python
-if "priors" in blocks:
-    raise ValueError("the priors block is registered but not wired into _assemble yet")
-```
+`features/priors.add_priors` is now wired into `_assemble` like `epa`, adding `home_prior`, `away_prior`,
+`prior_diff`. A team's season-s prior is its Elo going into its first season-s game (the end of season s-1; the Elo
+has no offseason step) regressed 40% toward its conference mean (`preseason_prior`); a team new to the data gets its
+conference mean; the first season in the data is neutral (1500). It needs no `Aux` input, so training
+(`train_all`) and serving build it with no extra data. No new CFBD call: it is derived from the games already cached.
+Serving also now opens a new season for a game dated July or later in a year the data has not reached yet.
 
-This is a hard fact in `src/cfb_predictor/features/build.py`, not an environment problem: the
-block is *registered* in `BLOCK_COLUMNS` with an **empty column list** (`{"priors": []}`), so there
-is no feature for it to add and nothing for the model to fit. Wiring it is a separate, larger
-change (it needs a real preseason-prior source and its columns designed); it is out of scope for
-this data PR and is not something this PR should paper over. The block_eval tool reports it as
-`NOT EVALUATED` rather than silently scoring it as a no-op.
+Same walk-forward protocol and games as `epa` (N=7560 held-out games, ridge, 2014-2025 data, seasons 2016-2025 held out).
+Raw output: `output/cfb_block_eval.txt`. `epa` reproduces the numbers above exactly.
+
+| Block | MAE d | MAE 95% CI | Brier d | Brier 95% CI | AUC d (block - base) | AUC 95% CI | Gap base -> block | Gap d 95% CI |
+|---|---|---|---|---|---|---|---|---|
+| priors | -0.00389 | [-0.02002, +0.01206] | +0.00011 | [-0.00014, +0.00038] | -0.00000 | [-0.00069, +0.00070] | 0.02568 -> 0.02667 | [-0.01425, +0.00016] |
+
+Verdict: **OFF**. The AUC interval does not exclude a decline (lower bound -0.0007) and the calibration gap
+widens slightly (0.0257 -> 0.0267), so `DEFAULT_BLOCKS` stays `()`. The prior is mostly what the Elo
+already carries; the fixed-within-season prior adds nothing a linear model can use. The returning-production and
+recruiting extension (Task 12 step 4) would cost new CFBD calls and was not run.
 
 ## Two corrected claims from the earlier draft of this doc
 
@@ -71,14 +78,12 @@ blocks were unevaluable. That was wrong, and the correction matters:
 - **`epa` does accept aux.** `build_training_frame(..., blocks, aux)` passes `aux.efficiency` to
   `epa.add_epa_features`, and `_assemble` already refused to default it to zeros. The only gap was
   `prepare_folds` not forwarding it, now fixed.
-- **`priors` is not wired**, but that is a different reason than "no aux support" — it is a
-  `ValueError` on a registered-but-empty block.
+- **`priors` was not wired** (now it is; see above).
 
 ## `DEFAULT_BLOCKS`: unchanged
 
 `DEFAULT_BLOCKS` is `()`. Nothing in this evaluation supports changing it: `epa` does not clear,
-and `priors` cannot be scored at all until it is wired. This PR lands the data, the pull script and
-the corrected notes only.
+and `priors` is measured and does not clear.
 
 ## Files
 
