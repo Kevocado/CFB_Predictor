@@ -36,7 +36,53 @@ REBUILD_WEEKS_BEHIND = 1
 MAX_WEEK = 16
 
 
-def _build_week(season: int, week: int) -> dict:
+_MATCHUP_INPUTS: dict[int, tuple] = {}
+
+
+def _matchup_inputs(season: int):
+    """(efficiency, game history, FBS team set) for the season, loaded once per run. Efficiency costs at most one
+    CFBD call per week (cfbd_advanced.current_season_efficiency); FBS membership is what keeps ranks FBS-only."""
+    if season not in _MATCHUP_INPUTS:
+        from .data import cfbd_advanced, games as games_data
+
+        efficiency = cfbd_advanced.current_season_efficiency(season, config.DATA_DIR / "cache" / "cfbd")
+        history = routes._load_game_history(season)
+        history = history.assign(game_id=history["game_id"].astype(str))
+        efficiency = efficiency.assign(game_id=efficiency["game_id"].astype(str)) if len(efficiency) else efficiency
+        fbs = set(games_data.fetch_fbs_teams(season)["team"])
+        _MATCHUP_INPUTS[season] = (efficiency, history, fbs)
+    return _MATCHUP_INPUTS[season]
+
+
+def _build_week_matchups(season: int, games: list[dict], previous: dict | None = None) -> dict[str, list[dict]]:
+    """FBS-only offence-versus-defence duels for each UPCOMING game, stored per game_id (undirected: `toward` and
+    `strength`; the facts route applies pick direction and the lift gate). Fail-open: a failed load keeps the previous
+    snapshot's stored duels for the week; no data means no duels, never a fabricated row."""
+    from .signals.matchups import duel_to_row, load_history_gaps, matchups_for_game
+
+    upcoming = [g for g in games if g.get("home_score") is None and g.get("away_score") is None]
+    if not upcoming:
+        return {}
+    try:
+        efficiency, history, fbs = _matchup_inputs(season)
+        gaps = load_history_gaps()
+    except Exception as exc:  # noqa: BLE001
+        print(f"    ! matchups for week unavailable ({exc}); keeping the previous snapshot's")
+        return dict((previous or {}).get("matchups") or {})
+    out: dict[str, list[dict]] = {}
+    for game in upcoming:
+        try:
+            duels = matchups_for_game(game["home_team"], game["away_team"], history, efficiency,
+                                      game.get("gameday"), season, fbs, history_gaps=gaps)
+        except Exception as exc:  # noqa: BLE001
+            print(f"    ! no duels for {game.get('game_id')}: {exc}")
+            continue
+        if duels:
+            out[str(game["game_id"])] = [duel_to_row(d) for d in duels]
+    return out
+
+
+def _build_week(season: int, week: int, previous: dict | None = None) -> dict:
     games = routes._get_games_live(season, week)
     predictions: dict[str, dict] = {}
     for game in games:
@@ -50,7 +96,8 @@ def _build_week(season: int, week: int) -> dict:
     except Exception as exc:
         print(f"    ! skipped player props for week {week}: {exc}")
         player_props = []
-    return {"games": games, "predictions": predictions, "player_props": player_props}
+    return {"games": games, "predictions": predictions, "player_props": player_props,
+            "matchups": _build_week_matchups(season, games, previous)}
 
 
 def _market_keys() -> frozenset[str]:
@@ -210,7 +257,7 @@ def build_snapshot(previous: dict | None = None) -> dict:
         key = str(week)
         if rebuild_from <= week <= rebuild_to or key not in previous_weeks:
             print(f"  week {week}")
-            weeks[key] = _build_week(season, week)
+            weeks[key] = _build_week(season, week, previous_weeks.get(key))
         else:
             weeks[key] = previous_weeks[key]
             reused.append(key)

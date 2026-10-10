@@ -125,3 +125,24 @@ def to_context(duels: list[Duel], pick_side: str | None, limit: int = 4,
             "toward_pick": toward_pick,
         })
     return out
+
+
+def duel_to_row(d: Duel) -> dict:
+    """The STORED form of a duel (the public snapshot keeps these per upcoming game): every field including the side
+    it favours and its strength, so direction and the lift gate are applied at serve time."""
+    return {"id": d.id, "attacker": d.attacker, "defender": d.defender, "stat": d.stat, "foil": d.foil,
+            "attacker_rank": d.attacker_rank, "defender_rank": d.defender_rank, "n_teams": d.n_teams,
+            "toward": d.toward, "strength": d.strength}
+
+
+def rows_to_duels(rows) -> list[Duel]:
+    """Stored rows back to Duels, strongest first. A malformed row is dropped, never guessed."""
+    out: list[Duel] = []
+    for r in rows or []:
+        try:
+            out.append(Duel(str(r["id"]), str(r["attacker"]), str(r["defender"]), str(r["stat"]), str(r["foil"]),
+                            int(r["attacker_rank"]), int(r["defender_rank"]), int(r["n_teams"]), str(r["toward"]),
+                            float(r["strength"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(out, key=lambda d: d.strength, reverse=True)

@@ -343,7 +343,7 @@ class TestMismatchDetection:
         }
         built: list[int] = []
 
-        def fake_build_week(season, week: int) -> dict:
+        def fake_build_week(season, week: int, previous=None) -> dict:
             built.append(week)
             return _week(_row("QB"), _row("QB"))
 
@@ -505,7 +505,7 @@ class TestBuildSnapshotReconciles:
         }
         built: list[int] = []
 
-        def fake_build_week(season, week: int) -> dict:
+        def fake_build_week(season, week: int, previous=None) -> dict:
             built.append(week)
             return _week(NEW_ROW)
 
@@ -534,7 +534,7 @@ class TestBuildSnapshotReconciles:
             "weeks": {"1": _week(OLD_ROW), "2": _week(OLD_ROW), "3": _week(OLD_ROW)},
         }
 
-        def fake_build_week(season, week: int) -> dict:
+        def fake_build_week(season, week: int, previous=None) -> dict:
             return _week()  # every rebuilt week is prop-less
 
         monkeypatch.setattr(ps, "_build_week", fake_build_week)
@@ -571,7 +571,7 @@ class TestBuildSnapshotReconciles:
         }
         built: list[int] = []
 
-        def fake_build_week(season, week: int) -> dict:
+        def fake_build_week(season, week: int, previous=None) -> dict:
             built.append(week)
             return _week(_row("QB"), _row("WR"), _row("RB"))
 
@@ -600,7 +600,7 @@ class TestBuildSnapshotReconciles:
         }
         built: list[int] = []
 
-        def fake_build_week(season, week: int) -> dict:
+        def fake_build_week(season, week: int, previous=None) -> dict:
             built.append(week)
             return _week(_row("QB"), _row("WR"), _row("RB"))
 
@@ -652,7 +652,7 @@ def _refresh(shipped: dict, monkeypatch) -> list[str]:
     "idempotent" has to mean here, and what finding 1 was not."""
     built: list[str] = []
 
-    def fake_build_week(season, week: int) -> dict:
+    def fake_build_week(season, week: int, previous=None) -> dict:
         built.append(str(week))
         return shipped["weeks"][str(week)]
 
