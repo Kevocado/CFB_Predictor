@@ -246,7 +246,7 @@ def test_the_snapshot_records_the_model_version_that_produced_it(monkeypatch, tm
     monkeypatch.setattr(public_snapshot.routes, "_get_power_rankings_live", lambda s: {})
     monkeypatch.setattr(public_snapshot.routes, "_get_hub_teams_live", lambda s: {})
     monkeypatch.setattr(public_snapshot.routes, "_get_hub_players_live", lambda s: {})
-    monkeypatch.setattr(public_snapshot, "_build_week", lambda s, w: {"games": [], "predictions": {}, "player_props": []})
+    monkeypatch.setattr(public_snapshot, "_build_week", lambda s, w, p=None: {"games": [], "predictions": {}, "player_props": []})
     monkeypatch.setattr(public_snapshot.config, "PUBLIC_SNAPSHOT_PATH", tmp_path / "snap.json")
 
     public_snapshot.main()
@@ -276,7 +276,7 @@ def test_a_snapshot_from_older_models_is_never_reused(monkeypatch, tmp_path):
 
     built_weeks = []
 
-    def _record(season, week):
+    def _record(season, week, previous=None):
         built_weeks.append(week)
         return {"games": [], "predictions": {}, "player_props": []}
 
@@ -314,7 +314,7 @@ def test_a_snapshot_from_the_same_models_is_still_reused(monkeypatch, tmp_path):
 
     built_weeks = []
 
-    def _record(season, week):
+    def _record(season, week, previous=None):
         built_weeks.append(week)
         return {"games": [], "predictions": {}, "player_props": []}
 
@@ -387,7 +387,7 @@ def test_a_stale_snapshot_supplies_neither_weeks_nor_standings(monkeypatch, tmp_
     monkeypatch.setattr(public_snapshot.routes, "_get_hub_teams_live", _offline)
     monkeypatch.setattr(public_snapshot.routes, "_get_hub_players_live", _offline)
     monkeypatch.setattr(public_snapshot, "_build_week",
-                        lambda s, w: {"games": [], "predictions": {}, "player_props": []})
+                        lambda s, w, p=None: {"games": [], "predictions": {}, "player_props": []})
 
     stale = {
         "season": 2026, "current_week": 5,

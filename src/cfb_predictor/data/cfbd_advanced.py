@@ -114,6 +114,41 @@ def efficiency_frame_from_disk(out_dir: Path = None, years=None) -> pd.DataFrame
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def current_season_efficiency(season: int, cache_dir: Path, max_age_days: float = 6.0, fetch=None) -> pd.DataFrame:
+    """Team-game efficiency for an in-progress season, refreshed AT MOST once per `max_age_days` (1 CFBD call).
+
+    Only the snapshot job calls this (the request path reads the snapshot). A fresh cache file is reused with no
+    call; a stale or missing one is refetched via `fetch(season) -> rows` (default: CFBD with CFBD_API_KEY); a
+    failed refetch falls back to the stale cache, then to the committed data/cfbd file, then to an empty frame."""
+    import time
+
+    cache = Path(cache_dir) / f"advanced_{season}.json"
+    rows = None
+    if cache.exists() and time.time() - cache.stat().st_mtime < max_age_days * 86400:
+        rows = _load_rows(cache)
+    else:
+        try:
+            if fetch is None:
+                key = os.environ.get("CFBD_API_KEY")
+                if not key:
+                    raise RuntimeError("CFBD_API_KEY is not set")
+                with _client(key) as client:
+                    rows = fetch_season_advanced(client, season)
+            else:
+                rows = fetch(season)
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rows))
+            os.replace(tmp, cache)
+        except Exception as exc:  # noqa: BLE001 - fail open: stale data beats none, none beats a crashed snapshot
+            print(f"    ! CFBD advanced pull for {season} failed ({exc}); using what is on disk")
+            for path in (cache, DEFAULT_OUT_DIR / f"advanced_{season}.json"):
+                if path.exists():
+                    rows = _load_rows(path)
+                    break
+    return to_team_game_frame(rows) if rows else pd.DataFrame()
+
+
 def main() -> int:
     import argparse
     import sys

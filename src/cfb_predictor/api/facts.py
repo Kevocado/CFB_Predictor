@@ -344,8 +344,18 @@ def _drivers(game: dict, season: int, home_team: str, away_team: str, live_ok: b
     return drivers
 
 
-def _context(game: dict) -> dict:
+def _stored_matchup_rows(season: int, week: int, game_id: str) -> list[dict]:
+    """The snapshot's stored FBS duels for this game as facts rows. `toward_pick` is always null (neutral): no
+    lift gate has proven a CFB duel type, so none may claim a direction."""
+    from ..signals.matchups import rows_to_duels, to_context
+    rows = ((_snapshot_week(season, week) or {}).get("matchups") or {}).get(str(game_id)) or []
+    return to_context(rows_to_duels(rows), None)
+
+
+def _context(game: dict, matchups: list[dict] | None = None) -> dict:
     context: dict[str, Any] = {}
+    if matchups:
+        context["matchups"] = matchups
     home_conf = game.get("home_conference")
     away_conf = game.get("away_conference")
     if home_conf and away_conf:
@@ -490,6 +500,13 @@ def get_facts(game_id: str) -> dict:
     # the same thing as taking every market from the row.
     markets = [] if (started and stored is None) else _markets(game, stored, moneyline_from=pick_source)
 
+    matchups_rows: list[dict] = []
+    if PUBLIC_MODE and not started:  # request path reads the snapshot only; never ranks or fetches
+        try:
+            matchups_rows = _stored_matchup_rows(season, week, game_id)
+        except Exception:
+            logger.info("stored matchups unavailable for game_id=%s", game_id)
+
     return {
         "sport": "cfb",
         "id": str(game_id),
@@ -502,7 +519,7 @@ def get_facts(game_id: str) -> dict:
         # The rating gap and player props are both built/fetched now, so a
         # started game quotes neither; fixed pre-match facts still show.
         "drivers": _drivers(game, season, home_team, away_team, live_ok=not started),
-        "context": _context(game),
+        "context": _context(game, matchups_rows),
         "players": [] if started else _players(_props(season, week), {home_team, away_team}),
         "record": _record(),
         "result": _result(game, status, pick_timing, stored),
