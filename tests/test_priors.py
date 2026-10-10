@@ -101,3 +101,31 @@ def test_block_trains_serves_and_matches_row_for_row():
     row2 = feature_build.build_features_for_game("Alabama", "Georgia", mid, gameday="2020-10-20", conference_game=True,
                                                  blocks=("priors",))
     assert row2["home_prior"] == pytest.approx(t2020.iloc[0]["home_prior"])
+
+
+def _train_prior(frame, team, season):
+    r = frame[(frame["season"] == season) & ((frame["home_team"] == team) | (frame["away_team"] == team))].iloc[0]
+    return r["home_prior"] if r["home_team"] == team else r["away_prior"]
+
+
+def test_serving_a_cross_conference_season_opener_matches_training():
+    """The upcoming row has no conference; its teams must still regress toward their OWN conference means."""
+    g = _games()
+    frame, _ = feature_build.build_training_frame(g, blocks=("priors",))
+    played = g[g["season"] < 2020].copy()
+    row = feature_build.build_features_for_game("Alabama", "Ohio State", played, gameday="2020-09-02", conference_game=False,
+                                                blocks=("priors",))
+    assert row["home_prior"] == pytest.approx(_train_prior(frame, "Alabama", 2020))
+    assert row["away_prior"] == pytest.approx(_train_prior(frame, "Ohio State", 2020))
+
+
+def test_served_prior_does_not_depend_on_who_has_played_so_far():
+    """Conference means come from the complete prior season, not from the teams already seen in the new one."""
+    g = _games()
+    frame, _ = feature_build.build_training_frame(g, blocks=("priors",))
+    for upto_week in (0, 1, 2):
+        played = g[(g["season"] < 2020) | ((g["season"] == 2020) & (g["week"] <= upto_week))].copy()
+        row = feature_build.build_features_for_game("Michigan", "Alabama", played, gameday="2020-11-20", conference_game=False,
+                                                    blocks=("priors",))
+        assert row["home_prior"] == pytest.approx(_train_prior(frame, "Michigan", 2020))
+        assert row["away_prior"] == pytest.approx(_train_prior(frame, "Alabama", 2020))

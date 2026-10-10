@@ -30,10 +30,11 @@ def prior_columns() -> list[str]:
 def add_priors(df: pd.DataFrame, regress: float = 0.4) -> pd.DataFrame:
     """Add home_prior / away_prior / prior_diff to a frame that already carries `*_pregame_rating` and `season`.
 
-    A team's season-s prior is its Elo going INTO its first season-s game (= the end of season s-1; the Elo has no
-    offseason step), regressed toward its conference mean. Both the rating and the schedule are known before kickoff
-    of week 1, so no season-s result reaches a season-s prior. A team with no earlier season gets its conference mean
-    (`new_teams`); the first season in the data has no history at all and gets the neutral rating for everyone.
+    A team's season-s prior is its Elo going into its LAST season-(s-1) game (so it omits that one game's update),
+    regressed toward the mean of its season-(s-1) conference. The baseline is the COMPLETE season-(s-1) field, so a
+    team's prior does not change as other teams play in season s (training sees the whole schedule; serving sees only
+    the games played so far, and the two must agree). A team in season s with no season-(s-1) history gets its own
+    conference's mean (`new_teams`). The first season in the data has no history and is neutral for everyone.
     """
     if "season" not in df.columns or df["season"].isna().all():
         raise ValueError("the priors block needs a `season` column")
@@ -44,18 +45,17 @@ def add_priors(df: pd.DataFrame, regress: float = 0.4) -> pd.DataFrame:
         for side in ("home", "away")
     ], ignore_index=True).dropna(subset=["season"])
     long["conference"] = long["conference"].where(long["conference"].map(lambda c: isinstance(c, str) and bool(c)), UNKNOWN_CONF)
-    long = long.sort_values("gameday", kind="stable")  # earliest game of the season first, home or away
-    starts = long.groupby(["season", "team"], sort=True).first().reset_index()
-    seasons = sorted(starts["season"].unique())
+    long = long.sort_values("gameday", kind="stable")  # earliest first, home or away
+    seasons = sorted(long["season"].unique())
     tables = []
     for i, s in enumerate(seasons):
-        cur = starts[starts["season"] == s]
+        cur = long[long["season"] == s].groupby("team").first().reset_index()  # who plays in s, and their s conference
         if i == 0:
             tables.append(pd.DataFrame({"team": cur["team"], "season": s, "prior": NEUTRAL}))
             continue
-        seen = set(starts.loc[starts["season"] < s, "team"])
-        old, new = cur[cur["team"].isin(seen)], cur[~cur["team"].isin(seen)]
-        finals = old.assign(season=s - 1)[["team", "season", "rating", "conference"]]
+        prev = long[long["season"] == seasons[i - 1]].groupby("team").last().reset_index()
+        finals = prev.assign(season=s - 1)[["team", "season", "rating", "conference"]]
+        new = cur[~cur["team"].isin(prev["team"])]
         t = preseason_prior(finals, season=s, regress=regress, new_teams=dict(zip(new["team"], new["conference"])))
         tables.append(t.assign(season=s))
     table = pd.concat(tables, ignore_index=True).drop_duplicates(["season", "team"]).set_index(["season", "team"])["prior"]

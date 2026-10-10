@@ -52,9 +52,10 @@ interval straddles zero — no evidence it helps, no evidence it hurts. It does 
 ## `priors` block: wired, evaluated, **left OFF**
 
 `features/priors.add_priors` is now wired into `_assemble` like `epa`, adding `home_prior`, `away_prior`,
-`prior_diff`. A team's season-s prior is its Elo going into its first season-s game (the end of season s-1; the Elo
-has no offseason step) regressed 40% toward its conference mean (`preseason_prior`); a team new to the data gets its
-conference mean; the first season in the data is neutral (1500). It needs no `Aux` input, so training
+`prior_diff`. A team's season-s prior is its Elo going into its last season-(s-1) game (omitting that one game's update),
+regressed 40% toward the mean of its season-(s-1) conference over the complete prior-season field
+(`preseason_prior`), so a served prior does not depend on who has played in season s yet; a team with no
+season-(s-1) history gets its own conference's mean; the first season in the data is neutral (1500). It needs no `Aux` input, so training
 (`train_all`) and serving build it with no extra data. No new CFBD call: it is derived from the games already cached.
 Serving also now opens a new season for a game dated July or later in a year the data has not reached yet.
 
@@ -63,10 +64,10 @@ Raw output: `output/cfb_block_eval.txt`. `epa` reproduces the numbers above exac
 
 | Block | MAE d | MAE 95% CI | Brier d | Brier 95% CI | AUC d (block - base) | AUC 95% CI | Gap base -> block | Gap d 95% CI |
 |---|---|---|---|---|---|---|---|---|
-| priors | -0.00389 | [-0.02002, +0.01206] | +0.00011 | [-0.00014, +0.00038] | -0.00000 | [-0.00069, +0.00070] | 0.02568 -> 0.02667 | [-0.01425, +0.00016] |
+| priors | -0.00542 | [-0.01595, +0.00625] | -0.00003 | [-0.00022, +0.00015] | -0.00027 | [-0.00075, +0.00018] | 0.02568 -> 0.02950 | [-0.01162, +0.00341] |
 
-Verdict: **OFF**. The AUC interval does not exclude a decline (lower bound -0.0007) and the calibration gap
-widens slightly (0.0257 -> 0.0267), so `DEFAULT_BLOCKS` stays `()`. The prior is mostly what the Elo
+Verdict: **OFF**. The AUC interval does not exclude a decline (lower bound -0.00075) and the calibration gap
+widens (0.0257 -> 0.0295), so `DEFAULT_BLOCKS` stays `()`. The prior is mostly what the Elo
 already carries; the fixed-within-season prior adds nothing a linear model can use. The returning-production and
 recruiting extension (Task 12 step 4) would cost new CFBD calls and was not run.
 

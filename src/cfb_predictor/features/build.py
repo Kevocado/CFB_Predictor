@@ -150,6 +150,10 @@ def build_features_for_game(
         # keys on it); January bowls stay in the season that is already in the data.
         season = played["season"].max()
         upcoming["season"] = when.year if when.year > season and when.month >= 7 else season
+    if {"home_conference", "away_conference"} <= set(played.columns):
+        # the upcoming row has no schedule metadata; priors regress each team toward ITS conference's mean
+        upcoming["home_conference"] = _team_conference(home_team, games_df)
+        upcoming["away_conference"] = _team_conference(away_team, games_df)
     frame = pd.concat([played, pd.DataFrame([upcoming])], ignore_index=True)
     frame["gameday"] = pd.to_datetime(frame["gameday"], utc=True).dt.tz_localize(None)
     row = _assemble(frame, blocks, aux)
@@ -159,18 +163,19 @@ def build_features_for_game(
     return served[[c for c in feature_columns(blocks) if c in served.index]]
 
 
+def _team_conference(team: str, games_df: pd.DataFrame):
+    """The conference named on the team's most recent row that names one, else None."""
+    rows = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
+    for _, r in rows.iloc[::-1].iterrows():
+        c = r["home_conference"] if r["home_team"] == team else r["away_conference"]
+        if isinstance(c, str) and c:
+            return c
+    return None
+
+
 def _same_conference(home_team: str, away_team: str, games_df: pd.DataFrame) -> bool:
     """Whether the two teams share a conference, read from the most recent row that names each team's conference."""
     if not {"home_conference", "away_conference"} <= set(games_df.columns):
         return False
-
-    def conference(team: str):
-        rows = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
-        for _, r in rows.iloc[::-1].iterrows():
-            c = r["home_conference"] if r["home_team"] == team else r["away_conference"]
-            if isinstance(c, str) and c:
-                return c
-        return None
-
-    h, a = conference(home_team), conference(away_team)
+    h, a = _team_conference(home_team, games_df), _team_conference(away_team, games_df)
     return h is not None and h == a
