@@ -18,10 +18,12 @@ def test_unranked_team_gives_no_duel():
 
 def test_a_duel_built_without_history_carries_a_gap_based_strength():
     """With no history, bigger gap → bigger strength."""
+    # T5 attack (5) vs T20 defence (20): gap = 15
     big = duel.make_duel("a", home="T5", away="T20", attacker_side="home",
-                         attack_ranks=_ranks_30(), defence_ranks=_ranks_30(), history_gaps=[])
-    small = duel.make_duel("a", home="T10", away="T20", attacker_side="home",
-                           attack_ranks=_ranks_30(), defence_ranks=_ranks_30(), history_gaps=[])
+                         attack_ranks=_ranks_30(), defence_ranks=_ranks_30(), history_gaps=[], min_gap=10)
+    # T5 attack (5) vs T15 defence (15): gap = 10
+    small = duel.make_duel("a", home="T5", away="T15", attacker_side="home",
+                           attack_ranks=_ranks_30(), defence_ranks=_ranks_30(), history_gaps=[], min_gap=10)
     assert big.strength > small.strength > 0
 
 def test_bad_attack_into_good_defence_favours_the_defender():

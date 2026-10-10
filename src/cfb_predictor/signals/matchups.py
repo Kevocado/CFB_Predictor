@@ -60,12 +60,17 @@ def _recent_means(efficiency: pd.DataFrame, games_df: pd.DataFrame, as_of: pd.Ti
 def matchups_for_game(
     home: str, away: str, games_df: pd.DataFrame, efficiency: pd.DataFrame, as_of, season: int,
     fbs_teams: set[str], history_gaps: dict[str, np.ndarray] | None = None, min_gap: int = 15,
+    complete_table: bool = False,
 ) -> list[Duel]:
     """Up to four duels (two kinds x two directions), strongest first. Empty when either team lacks data.
 
     `fbs_teams` is REQUIRED: the efficiency frame also carries FCS opponents, so ranking "everyone in the frame" gave
     "#15 of 264". Ranks are among the season's FBS teams only (the set `games_data.fetch_fbs_teams(season)` yields);
-    a team outside the set gets no duel."""
+    a team outside the set gets no duel.
+
+    When complete_table=True, returns all four duels (two types x two directions) even when the
+    rank gap is below min_gap. Small-gap duels have toward='neutral'.
+    """
     efficiency = efficiency[efficiency["team"].isin(fbs_teams)] if len(efficiency) else efficiency
     means = _recent_means(efficiency, games_df, pd.Timestamp(as_of), season)
     if home not in means.index or away not in means.index:
@@ -82,6 +87,7 @@ def matchups_for_game(
                 attack_ranks=attack_ranks, defence_ranks=defence_ranks,
                 history_gaps=history_gaps.get(duel_id, np.array([])), min_gap=min_gap,
                 stat=attack_noun, foil=defence_noun,
+                complete_table=complete_table,
             )
             if d is not None:
                 out.append(d)
@@ -90,26 +96,32 @@ def matchups_for_game(
 
 
 def to_context(duels: list[Duel], pick_side: str | None, limit: int = 4,
-               lift_gate: dict[str, bool] | None = None) -> list[dict]:
+               lift_gate: dict[str, bool] | None = None, min_gap: int = 15) -> list[dict]:
     """Facts-bundle form. `toward_pick` is True when the duel favours the pick
     AND the residual-lift gate (Task 10) has proven the duel's TYPE: `lift_gate`
-    maps a duel type (\"pass_off_vs_pass_def\", id without the :side suffix) to
+    maps a duel type ("pass_off_vs_pass_def", id without the :side suffix) to
     whether it passes. Unproven (missing/failing) types ship `toward_pick` None
     -- neutral context, never Edge or Risk.
 
     The gate is FAIL CLOSED: `lift_gate=None` behaves exactly like `{}` (nothing
     is proven), so there is no "ungated" mode -- a caller that forgets to wire
     the gate can never emit Edge/Risk-capable rows before a type is proven.
+
+    A duel with rank gap below min_gap (i.e., toward='neutral') is NEVER eligible
+    to carry a direction, even when its type is proven by the lift gate.
     """
     out: list[dict] = []
     directed_types: set[str] = set()
     for d in duels[:limit]:
         duel_type = d.id.split(":")[0]
         proven = (lift_gate or {}).get(duel_type, False)
-        # The lift test validates the STRONGEST duel of a type per game, so only that one (the first of its type in
-        # the strongest-first order `matchups_for_game` returns) may carry a direction. The opposite-direction
-        # duel of the same type was never tested and stays neutral context.
-        eligible = proven and duel_type not in directed_types
+        # A duel is only eligible to carry a direction if:
+        # 1. Its type is proven by the lift gate
+        # 2. No other duel of this type has already been directed (strongest-first)
+        # 3. The duel's rank gap is >= min_gap (i.e., it's not a "neutral" small-gap duel)
+        gap = d.defender_rank - d.attacker_rank  # positive: defence worse than attack
+        gap_ok = abs(gap) >= min_gap
+        eligible = proven and duel_type not in directed_types and gap_ok
         toward_pick = None if (pick_side is None or not eligible) else (d.toward == pick_side)
         if eligible and pick_side is not None:
             directed_types.add(duel_type)

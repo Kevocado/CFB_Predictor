@@ -349,7 +349,7 @@ def _stored_matchup_rows(season: int, week: int, game_id: str) -> list[dict]:
     lift gate has proven a CFB duel type, so none may claim a direction."""
     from ..signals.matchups import rows_to_duels, to_context
     rows = ((_snapshot_week(season, week) or {}).get("matchups") or {}).get(str(game_id)) or []
-    return to_context(rows_to_duels(rows), None)
+    return to_context(rows_to_duels(rows), None, min_gap=15)
 
 
 def _context(game: dict, matchups: list[dict] | None = None) -> dict:

@@ -29,8 +29,12 @@ def edge_strength(gap: float, history: np.ndarray | list, n_teams: int|None=None
 
 def make_duel(duel_id: str, *, home: str, away: str, attacker_side: str,
               attack_ranks: dict[str, int], defence_ranks: dict[str, int], history_gaps=None,
-              min_gap: int = 8, stat: str = "", foil: str = "") -> Duel | None:
-    """The duel of `attacker_side`'s attack against the other side's defence, or None when too close."""
+              min_gap: int = 15, stat: str = "", foil: str = "", complete_table: bool = False) -> Duel | None:
+    """The duel of `attacker_side`'s attack against the other side's defence.
+    
+    By default returns None when the rank gap is below min_gap.
+    When complete_table=True, returns a Duel even for small gaps with toward='neutral'.
+    """
     attacker = home if attacker_side == "home" else away
     defender = away if attacker_side == "home" else home
     a = attack_ranks.get(attacker)
@@ -39,8 +43,12 @@ def make_duel(duel_id: str, *, home: str, away: str, attacker_side: str,
         return None
     gap = d - a  # positive: defence ranks WORSE than attack ranks → attack has the edge
     if abs(gap) < min_gap:
-        return None
-    toward = attacker_side if gap > 0 else ("away" if attacker_side == "home" else "home")
+        if not complete_table:
+            return None
+        # Complete table mode: return a neutral duel for the matchup table
+        toward = "neutral"
+    else:
+        toward = attacker_side if gap > 0 else ("away" if attacker_side == "home" else "home")
     history = np.array([], float) if history_gaps is None else np.asarray(history_gaps, float)
     return Duel(
         duel_id, attacker, defender, stat, foil,

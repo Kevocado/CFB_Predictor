@@ -73,7 +73,7 @@ def _build_week_matchups(season: int, games: list[dict], previous: dict | None =
     for game in upcoming:
         try:
             duels = matchups_for_game(game["home_team"], game["away_team"], history, efficiency,
-                                      game.get("gameday"), season, fbs, history_gaps=gaps)
+                                      game.get("gameday"), season, fbs, history_gaps=gaps, complete_table=True)
         except Exception as exc:  # noqa: BLE001
             print(f"    ! no duels for {game.get('game_id')}: {exc}")
             continue
