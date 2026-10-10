@@ -73,7 +73,7 @@ def test_unknown_team_yields_no_duels():
     assert matchups.matchups_for_game("ZZZ", "YYY", pd.DataFrame(), pd.DataFrame(), as_of="2024-01-01", season=2024, fbs_teams=set()) == []
 
 def test_context_marks_direction_relative_to_the_pick():
-    d = duel.Duel(id="x", attacker="A", defender="B", stat="s", foil="f", attacker_rank=1, defender_rank=5, n_teams=30, toward="home", strength=0.5)
+    d = duel.Duel(id="x", attacker="A", defender="B", stat="s", foil="f", attacker_rank=1, defender_rank=25, n_teams=30, toward="home", strength=0.5)
     # Fail-closed: without a gate (the resolver's job, not this module's), no
     # type is proven, so even with a pick every row is neutral context.
     ctx = matchups.to_context([d], pick_side="home")

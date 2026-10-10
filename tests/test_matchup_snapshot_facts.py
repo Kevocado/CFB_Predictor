@@ -171,3 +171,30 @@ def test_failed_pull_falls_back_to_stale_cache(tmp_path):
     def boom(season):
         raise RuntimeError("quota")
     assert len(cfbd_advanced.current_season_efficiency(2026, tmp_path, fetch=boom)) > 0
+
+
+def test_every_fbs_game_gets_all_four_duels_where_the_old_gap_filter_left_fewer(world, monkeypatch):
+    from cfb_predictor.signals.matchups import DUELS, matchups_for_game
+    eff, hist, fbs = world
+    games, _ = _upcoming_games(world)
+    monkeypatch.setattr(public_snapshot, "_matchup_inputs", lambda season: (eff, hist, fbs))
+    stored = public_snapshot._build_week_matchups(SEASON, games)
+    want = {f"{t[0]}:{s}" for t in DUELS for s in ("home", "away")}
+    assert len(stored) == len(games) > 0
+    for rows in stored.values():
+        assert {r["id"] for r in rows} == want
+    # the pre-change call (min_gap=15) dropped rows for at least one of these real games
+    old = [len(matchups_for_game(g["home_team"], g["away_team"], hist, eff, g["gameday"], SEASON, fbs, min_gap=15))
+           for g in games]
+    assert min(old) < 4 and max(len(r) for r in stored.values()) == 4
+    print("old-vs-new row counts", sorted(set(old)), "-> 4")
+
+
+def test_below_gap_duel_stays_neutral_in_context_even_when_proven():
+    from cfb_predictor.signals.duel import Duel
+    from cfb_predictor.signals.matchups import to_context
+    close = Duel("pass_off_vs_pass_def:home", "A", "B", "s", "f", 40, 50, 134, "home", 0.9)
+    far = Duel("rush_off_vs_rush_def:home", "A", "B", "s", "f", 10, 60, 134, "home", 0.9)
+    gate = {"pass_off_vs_pass_def": True, "rush_off_vs_rush_def": True}
+    ctx = {r["id"]: r["toward_pick"] for r in to_context([close, far], "home", lift_gate=gate)}
+    assert ctx == {"pass_off_vs_pass_def:home": None, "rush_off_vs_rush_def:home": True}
