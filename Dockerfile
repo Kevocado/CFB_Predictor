@@ -2,9 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Dependencies FIRST, keyed on pyproject.toml alone. The dependency layer is large (xgboost, pandas, scipy,
+# scikit-learn) and used to sit AFTER `COPY src/`, so every commit rebuilt it with a new digest and the VPS kept a
+# full extra copy per deploy. Now an unchanged dependency set reuses the SAME layer digest across commits and a deploy
+# adds only the thin app layers.
+# `pip install -e .` needs the package directory to exist to resolve it, so a stub stands in for the real source;
+# the real source is copied right after and PYTHONPATH=/app/src (set below) is what the app imports from.
 COPY pyproject.toml ./
+RUN mkdir -p src/cfb_predictor && touch src/cfb_predictor/__init__.py \
+    && pip install --no-cache-dir -e . \
+    && rm -rf src
+
 COPY src/ ./src/
-RUN pip install --no-cache-dir -e .
 
 # Create cache and tracking data directories explicitly
 RUN mkdir -p /app/data/cache/games /app/data/cache/teams /app/data/cache/player_stats /app/data/cache/odds /app/models
