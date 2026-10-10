@@ -50,7 +50,11 @@ def to_team_game_frame(rows: list[dict]) -> pd.DataFrame:
 
 
 def fetch_season_advanced(client, year: int) -> list[dict]:
-    return client.get("/stats/game/advanced", {"year": year})
+    # cfbd>=5's ApiClient has no `.get`; the typed StatsApi is the call, and `to_dict()` gives back the same
+    # camelCase JSON the committed advanced_<year>.json files hold (round-trip checked on real rows in the tests).
+    import cfbd
+
+    return [row.to_dict() for row in cfbd.StatsApi(client).get_advanced_game_stats(year=year)]
 
 
 def pull_all(client, years, out_dir, budget: int = 40) -> int:
