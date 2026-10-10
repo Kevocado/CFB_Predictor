@@ -21,12 +21,26 @@ def test_defence_columns_come_from_the_opponents_offence():
 
 
 class FakeClient:
+    """Counts fetches. cfbd>=5's ApiClient has no `.get`; the real call (StatsApi.get_advanced_game_stats) is covered
+    against real rows in test_cfbd_advanced_client.py, so these budget/resume/atomic-write tests stub the fetch itself."""
+
     def __init__(self):
         self.calls = 0
 
-    def get(self, path, params):
-        self.calls += 1
+
+@pytest.fixture(autouse=True)
+def _stub_fetch():
+    # A private MonkeyPatch, not the test's `monkeypatch` fixture: one test calls monkeypatch.undo() mid-way and
+    # must not undo this stub with it.
+    mp = pytest.MonkeyPatch()
+
+    def fake_fetch(client, year):
+        client.calls += 1
         return FIX
+
+    mp.setattr(cfbd_advanced, "fetch_season_advanced", fake_fetch)
+    yield
+    mp.undo()
 
 
 def test_budget_is_enforced_before_the_call(tmp_path):
