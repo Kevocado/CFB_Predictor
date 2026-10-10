@@ -193,7 +193,10 @@ def check_image(text: str) -> None:
         f"the build must push {IMAGE}:${{{{{{ github.sha }}}}}} — the stack pins a sha"
     )
     assert f"{IMAGE}:latest" in body, f"the build must also push {IMAGE}:latest"
-    assert body.count("docker push") >= 2, "both the sha and latest tags must be pushed"
+    # Pushed either by two explicit `docker push` commands, or by docker/build-push-action with `push: true` (which
+    # pushes every tag listed above, so the two tag assertions already cover "both tags").
+    pushed_by_action = bool(re.search(r"uses:\s*docker/build-push-action@", body)) and bool(re.search(r"push:\s*true", body))
+    assert body.count("docker push") >= 2 or pushed_by_action, "both the sha and latest tags must be pushed"
 
 
 def check_vps(text: str) -> None:

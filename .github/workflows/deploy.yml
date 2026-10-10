@@ -54,11 +54,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
+      - uses: docker/setup-buildx-action@v3
+
+      # Registry layer cache (:buildcache in GHCR, only ever pulled by CI). The Dockerfile installs dependencies from
+      # pyproject.toml alone, so an unchanged dependency set is a cache HIT and keeps the same layer digest across
+      # commits; the VPS pulls only the thin app layers per deploy. provenance is off so the pushed image stays a
+      # plain single-manifest image for `compose pull`.
       - name: Build and push CFB Predictor image
-        run: |
-          docker build -t ghcr.io/kevocado/cfb-predictor:${{ github.sha }} -t ghcr.io/kevocado/cfb-predictor:latest .
-          docker push ghcr.io/kevocado/cfb-predictor:${{ github.sha }}
-          docker push ghcr.io/kevocado/cfb-predictor:latest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/kevocado/cfb-predictor:${{ github.sha }}
+            ghcr.io/kevocado/cfb-predictor:latest
+          cache-from: type=registry,ref=ghcr.io/kevocado/cfb-predictor:buildcache
+          cache-to: type=registry,ref=ghcr.io/kevocado/cfb-predictor:buildcache,mode=max
 
 
   # Legacy. Azure is being cut over to the VPS, so this stays off unless the
