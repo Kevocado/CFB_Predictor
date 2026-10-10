@@ -4,7 +4,6 @@ Loaded 10373 games. Evaluating: epa, priors
 
 Evaluating block: epa...
 Evaluating block: priors...
-  -> NOT EVALUATED: block 'priors' cannot be built: the priors block is registered but not wired into _assemble yet
 
 ====================================================================================
 CFB BLOCK EVALUATION RESULTS
@@ -12,6 +11,8 @@ CFB BLOCK EVALUATION RESULTS
 Block           N     MAE d            MAE 95% CI   Brier d          Brier 95% CI              Gap d CI Clears
 --------------------------------------------------------------------------------------------------------------
 epa          7560  +0.00420  [-0.05329, +0.06109]  -0.00013  [-0.00109, +0.00084]  [-0.01573, +0.00663]     No
-priors      not evaluated
+priors       7560  -0.00542  [-0.01595, +0.00625]  -0.00003  [-0.00022, +0.00015]  [-0.01162, +0.00341]     No
+epa: AUC delta (block - base) +0.00079 CI [-0.00169, +0.00302]; calibration gap base 0.02568 -> block 0.03144
+priors: AUC delta (block - base) -0.00027 CI [-0.00075, +0.00018]; calibration gap base 0.02568 -> block 0.02950
 ====================================================================================
 Sign convention: delta = base - block, so POSITIVE means the block is better.

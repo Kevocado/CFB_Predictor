@@ -101,11 +101,12 @@ class TestBlocksAuxWiring:
         with pytest.raises(ValueError):
             feature_build.build_training_frame(games, blocks=("epa",), aux=None)
 
-    def test_priors_is_registered_but_not_wired(self):
-        """The block being unevaluable is a code fact, not an outage: it raises."""
+    def test_priors_block_is_wired_and_needs_no_aux(self):
         games = _multi_season_games()
-        with pytest.raises(ValueError, match="priors"):
-            feature_build.build_training_frame(games, blocks=("priors",))
+        _, base_cols = feature_build.build_training_frame(games)
+        frame, cols = feature_build.build_training_frame(games, blocks=("priors",))
+        assert cols == base_cols + ["home_prior", "away_prior", "prior_diff"]
+        assert not frame[["home_prior", "away_prior", "prior_diff"]].isna().any().any()
 
 
 class TestBlockEvalTool:
@@ -124,13 +125,10 @@ class TestBlockEvalTool:
         result, err = block_eval.evaluate_block(games, None, "epa")
         assert result is None and "aux" in err
 
-    def test_evaluate_block_priors_is_reported_not_scored_as_a_noop(self):
-        games = _multi_season_games()
-        eff = to_team_game_frame(_adv_rows(n_games=3, season=2018))
-        aux = feature_build.Aux(efficiency=eff)
-        result, err = block_eval.evaluate_block(games, aux, "priors")
-        assert result is None
-        assert "not wired" in err
+    def test_evaluate_block_priors_runs_without_efficiency_aux(self):
+        games = _multi_season_games(seasons=(2016, 2017, 2018, 2019))
+        result, err = block_eval.evaluate_block(games, None, "priors")
+        assert err is None and result["n_games"] > 0
 
     def test_evaluate_block_epa_runs_end_to_end_on_fixtures(self):
         games = _multi_season_games()
@@ -141,3 +139,13 @@ class TestBlockEvalTool:
         assert result["n_games"] > 0
         assert set(result) >= {"mae_delta", "mae_ci", "brier_delta", "brier_ci", "gap_ci", "clears"}
         assert isinstance(result["clears"], bool)
+
+
+def test_paired_bootstrap_auc_sign_and_zero():
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 2, 400).astype(float)
+    good = y + rng.normal(0, 0.8, 400)
+    bad = rng.normal(0, 1, 400)
+    d, lo, hi = block_eval.paired_bootstrap_auc(bad, good, y)
+    assert d > 0 and lo > 0
+    assert block_eval.paired_bootstrap_auc(good, good, y)[0] == 0.0

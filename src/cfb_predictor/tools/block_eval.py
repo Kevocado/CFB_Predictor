@@ -19,6 +19,26 @@ def paired_bootstrap(a, b, n: int = 2000, seed: int = 0) -> tuple[float, float]:
     return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
 
 
+def _auc(p, y) -> float:
+    """Mann-Whitney AUC with average ranks for ties."""
+    from scipy.stats import rankdata
+    r = rankdata(p)
+    n1 = y.sum()
+    n0 = len(y) - n1
+    return float((r[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+def paired_bootstrap_auc(p_base, p_block, y, n: int = 1000, seed: int = 0) -> tuple[float, float, float]:
+    """(point, lo, hi) of AUC(block) - AUC(base), resampling the SAME games for both. Positive means block is better."""
+    p_base, p_block, y = np.asarray(p_base, float), np.asarray(p_block, float), np.asarray(y, float)
+    rng = np.random.default_rng(seed)
+    d = []
+    for _ in range(n):
+        i = rng.integers(0, len(y), len(y))
+        d.append(_auc(p_block[i], y[i]) - _auc(p_base[i], y[i]))
+    return _auc(p_block, y) - _auc(p_base, y), float(np.percentile(d, 2.5)), float(np.percentile(d, 97.5))
+
+
 def calibration_gap(probs, y, buckets: int = 5) -> float:
     probs, y = np.asarray(probs, float), np.asarray(y, float)
     edges = np.quantile(probs, np.linspace(0, 1, buckets + 1))
@@ -117,7 +137,7 @@ def evaluate_block(games_df, aux, block: str, candidate: str = "ridge"):
     """Returns (result, None) or (None, reason). A block the pipeline cannot build is
     reported, never scored as a no-op -- that is how 'not wired' stays visible."""
     blocks = (block,)
-    if block in ("epa", "priors") and (aux is None or getattr(aux, "efficiency", None) is None):
+    if block == "epa" and (aux is None or getattr(aux, "efficiency", None) is None):
         return None, f"aux.efficiency is required for block {block!r}"
     try:
         base_folds = wf.prepare_folds(games_df)
@@ -134,7 +154,9 @@ def evaluate_block(games_df, aux, block: str, candidate: str = "ridge"):
     gap_block = calibration_gap(withb[2], withb[3])
     gap_ci = paired_bootstrap_gap(_per_fold_gap(base_folds, candidate),
                                   _per_fold_gap(withb_folds, candidate))
+    auc_delta, *auc_ci = paired_bootstrap_auc(base[2], withb[2], base[3])
     return {
+        "auc_delta": auc_delta, "auc_ci": tuple(auc_ci),
         "block": block, "n_games": int(len(base[0])),
         "mae_delta": float(base[0].mean() - withb[0].mean()), "mae_ci": mae_ci,
         "brier_delta": float(base[1].mean() - withb[1].mean()), "brier_ci": brier_ci,
@@ -186,6 +208,10 @@ def main() -> int:
             continue
         print(f"{r['block']:<10} {r['n_games']:>6} {r['mae_delta']:>+9.5f} {_fmt(r['mae_ci']):>21} "
               f"{r['brier_delta']:>+9.5f} {_fmt(r['brier_ci']):>21} {_fmt(r['gap_ci']):>21} {'Yes' if r['clears'] else 'No':>6}")
+    for r in results.values():
+        if r is not None:
+            print(f"{r['block']}: AUC delta (block - base) {r['auc_delta']:+.5f} CI [{r['auc_ci'][0]:+.5f}, {r['auc_ci'][1]:+.5f}]; "
+                  f"calibration gap base {r['gap_base']:.5f} -> block {r['gap_block']:.5f}")
     for block in args.blocks:
         if results.get(block) is None:
             print(f"{block:<10}  not evaluated")
