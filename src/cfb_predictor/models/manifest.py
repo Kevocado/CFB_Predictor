@@ -164,7 +164,18 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
     # Sigma from OUT-OF-SAMPLE residuals (the pooled walk-forward folds), never from the training rows the model
     # was fitted on: an in-sample sigma is optimistic and made every published probability overconfident.
     sigma, total_sigma = fit_sigmas(folds, chosen)
-    total_model = game_outcome.fit_xgb_margin(X_train, y_total)
+
+    # Race total candidates (ridge vs xgb) on held-out MAE, same as margin race
+    total_candidate_scores = {}
+    for candidate in ("ridge", "xgb"):
+        scored = walk_forward.evaluate_total_candidate(folds, candidate) if folds else pd.DataFrame()
+        total_candidate_scores[candidate] = float(scored["mae"].mean()) if not scored.empty else float("inf")
+    total_chosen = min(total_candidate_scores, key=total_candidate_scores.get)
+
+    if total_chosen == "ridge":
+        total_model = game_outcome.fit_margin_regression(X_train, y_total)
+    else:
+        total_model = game_outcome.fit_xgb_margin(X_train, y_total)
 
     _save_pickle(game_model, _artifact_path(GAME_MODEL_FILENAME))
     _save_pickle(total_model, _artifact_path(TOTAL_MODEL_FILENAME))
@@ -204,6 +215,8 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
         "player_feature_cols": player_feature_cols,
         "chosen_candidate": chosen,
         "candidate_scores": candidate_scores,
+        "total_chosen": total_chosen,
+        "total_candidate_scores": total_candidate_scores,
         "sigma": sigma,
         "total_sigma": total_sigma,
         "yardage_metrics": yardage_metrics,

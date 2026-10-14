@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import brier_score_loss, log_loss
+from sklearn.metrics import brier_score_loss, log_loss, mean_absolute_error
 
 from ..features.build import build_training_frame
 from ..models import game_outcome
@@ -118,6 +118,28 @@ def evaluate_candidate(folds: list[dict], candidate: str) -> pd.DataFrame:
                 "n_games": len(val_df),
                 "log_loss": log_loss(actual, probs, labels=[0, 1]),
                 "brier": brier_score_loss(actual, probs),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def evaluate_total_candidate(folds: list[dict], candidate: str) -> pd.DataFrame:
+    """Walk-forward evaluation for total-points regression candidates.
+
+    Uses MAE on held-out total points (not log-loss, since this is regression).
+    """
+    rows = []
+    for fold in folds:
+        train_df, val_df, feature_cols = fold["train_df"], fold["val_df"], fold["feature_cols"]
+        preds = _fit_predict(candidate, train_df, val_df, feature_cols, target="total_points")
+        actual = val_df["total_points"].to_numpy(float)
+        mae = mean_absolute_error(actual, preds)
+
+        rows.append(
+            {
+                "val_season": fold["val_season"],
+                "n_games": len(val_df),
+                "mae": mae,
             }
         )
     return pd.DataFrame(rows)
