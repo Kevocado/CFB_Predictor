@@ -192,7 +192,9 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
         if subset.empty:
             path.unlink(missing_ok=True)
             continue
-        model = player_props.fit_yardage_regressor(subset[player_feature_cols].fillna(0), subset[target_col])
+        model = player_props.fit_yardage_regressor(
+            subset[player_feature_cols].fillna(0), subset[target_col], market=market
+        )
         _save_pickle(model, path)
         yardage_metrics[market] = {"n_train": int(len(subset))}
 

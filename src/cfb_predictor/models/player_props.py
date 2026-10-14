@@ -44,8 +44,18 @@ def fit_anytime_td_classifier(X_train: pd.DataFrame, y_train: pd.Series) -> XGBC
     return model
 
 
-def fit_yardage_regressor(X_train: pd.DataFrame, y_train: pd.Series) -> XGBRegressor:
-    model = XGBRegressor(n_estimators=150, max_depth=3, learning_rate=0.05, random_state=42)
+#: Markets fitted to the MEDIAN (`reg:absoluteerror`) rather than the mean. They are judged on MAE and priced against a
+#: line that splits outcomes 50/50, and a squared-error fit chases the right tail of a skewed yardage distribution
+#: (median-coverage gap 0.203 -> 0.025 rushing, 0.175 -> 0.026 receiving; MAE +1.39 / +1.14 yds, paired bootstrap,
+#: walk-forward 2021-25; docs/research/2026-10-13-nfl-cfb-model-gaps.md in predictor-hub). `passing_yards` is
+#: deliberately absent: MAE improves but the gap-change CI does not exclude widening, so it does not clear the bar.
+#: `carries` / `receptions` were not measured and stay on squared error.
+ABSOLUTE_ERROR_MARKETS = frozenset({"rushing_yards", "receiving_yards"})
+
+
+def fit_yardage_regressor(X_train: pd.DataFrame, y_train: pd.Series, market: str | None = None) -> XGBRegressor:
+    objective = "reg:absoluteerror" if market in ABSOLUTE_ERROR_MARKETS else "reg:squarederror"
+    model = XGBRegressor(n_estimators=150, max_depth=3, learning_rate=0.05, random_state=42, objective=objective)
     model.fit(X_train.fillna(0), y_train)
     return model
 

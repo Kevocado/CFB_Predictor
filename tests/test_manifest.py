@@ -101,3 +101,16 @@ def test_train_all_rejects_training_data_without_walk_forward_fold(monkeypatch, 
 
     with pytest.raises(ValueError, match="walk-forward validation fold"):
         manifest.train_all(seasons=[2024])
+
+
+def test_committed_yardage_artifacts_match_their_declared_objectives():
+    """The pickles shipped in models/ were fitted with the objective the code says each market gets."""
+    import json
+    from cfb_predictor.config import MODELS_DIR
+    from cfb_predictor.models import manifest, player_props
+
+    declared = json.loads((MODELS_DIR / "manifest.json").read_text())["yardage_objectives"]
+    assert set(declared) == set(player_props.ABSOLUTE_ERROR_MARKETS)
+    for market, objective in declared.items():
+        fitted = manifest._load_pickle(manifest._yardage_model_path(market))
+        assert fitted.get_params()["objective"] == objective == "reg:absoluteerror"
