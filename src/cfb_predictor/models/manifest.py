@@ -209,6 +209,7 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
         "sigma": sigma,
         "total_sigma": total_sigma,
         "yardage_metrics": yardage_metrics,
+        "yardage_objectives": {m: "reg:absoluteerror" for m in player_props.ABSOLUTE_ERROR_MARKETS},
         **({"qb_passing_td": qb_metric} if qb_metric else {}),
         "feature_blocks": list(blocks),
         "artifact_fingerprint": artifact_fingerprint(player_feature_cols),
