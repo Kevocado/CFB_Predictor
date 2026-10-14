@@ -617,7 +617,15 @@ class TestBuildSnapshotReconciles:
 
 
 def _shipped() -> dict:
-    return json.loads(Path(config.PUBLIC_SNAPSHOT_PATH).read_text())
+    """The committed artifact, as if the committed models had built it.
+
+    These tests are about shape reconciliation, not model currency. A retrain lands in `models/` before the
+    scheduled refresh has rebuilt the snapshot, and `build_snapshot` then (correctly) refuses to reuse any week
+    from a different model -- which would turn every test below red for a reason that is not what they assert.
+    That refusal has its own tests (`test_a_snapshot_from_older_models_is_never_reused`)."""
+    shipped = json.loads(Path(config.PUBLIC_SNAPSHOT_PATH).read_text())
+    shipped["model_version"] = ps.manifest.model_version(ps.manifest.load_manifest())
+    return shipped
 
 
 def _without(week: dict, *keys: str) -> dict:

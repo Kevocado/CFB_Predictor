@@ -143,3 +143,13 @@ def test_cfb_never_gets_a_targets_based_market():
     for markets in player_props.POSITION_MARKETS.values():
         assert "targets" not in markets
     assert "targets" not in player_props.YARDAGE_TARGETS
+
+
+@pytest.mark.parametrize("market,objective", [
+    ("rushing_yards", "reg:absoluteerror"), ("receiving_yards", "reg:absoluteerror"),
+    ("passing_yards", "reg:squarederror"), ("carries", "reg:squarederror"), ("receptions", "reg:squarederror"),
+])
+def test_only_the_gated_markets_are_fitted_to_the_median(market, objective):
+    df = _toy_player_frame()
+    model = player_props.fit_yardage_regressor(df[FEATURE_COLS], df["rushing_yards"], market=market)
+    assert model.get_params()["objective"] == objective
