@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-10-14T22:22:18.144943+00:00",
+  "trained_at": "2026-10-15T14:44:28.432620+00:00",
   "seasons": [
     2018,
     2019,
@@ -38,7 +38,7 @@
     "xgb": 0.5696314331536212
   },
   "sigma": 16.975533499014745,
-  "total_sigma": 16.026454308078534,
+  "total_sigma": 16.227224426131006,
   "yardage_metrics": {
     "passing_yards": {
       "n_train": 25352
@@ -86,5 +86,27 @@
   "yardage_objectives": {
     "receiving_yards": "reg:absoluteerror",
     "rushing_yards": "reg:absoluteerror"
+  },
+  "total_spec": {
+    "kind": "ridge",
+    "blocks": [
+      "adj_epa"
+    ],
+    "feature_cols": [
+      "home_pregame_rating",
+      "away_pregame_rating",
+      "rating_diff",
+      "home_points_scored_roll",
+      "home_points_allowed_roll",
+      "away_points_scored_roll",
+      "away_points_allowed_roll",
+      "home_rest_days",
+      "away_rest_days",
+      "conference_game",
+      "home_adj_off_epa_ewm",
+      "away_adj_off_epa_ewm",
+      "home_adj_def_epa_ewm",
+      "away_adj_def_epa_ewm"
+    ]
   }
 }

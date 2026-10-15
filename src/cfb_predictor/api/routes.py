@@ -21,13 +21,14 @@ from fastapi import APIRouter, HTTPException
 
 from ..config import (
     CURRENT_SEASON,
+    DATA_DIR,
     PUBLIC_MODE,
     PUBLIC_SNAPSHOT_PATH,
     PUBLIC_SNAPSHOT_REFRESH_URL,
 )
 from ..data import games as games_data
 from ..data import player_stats, sportsbook_api
-from ..data import advanced_stats
+from ..data import advanced_stats, cfbd_advanced
 from ..features import build as feature_build
 from ..features.build import DEFAULT_BLOCKS
 from ..features import player_usage, power_ratings
@@ -353,14 +354,60 @@ def _lines_for_game(odds_df: pd.DataFrame, home_team: str, away_team: str) -> tu
     return spread_line, total_line
 
 
+#: Committed + current-season efficiency for the total model's epa-family block, rebuilt at most hourly. The snapshot job is
+#: where the current-season pull (1 CFBD call per ~6 days, disk-cached) happens; a request-time caller only ever reads files.
+_EFFICIENCY_TTL_SECONDS = 3600
+_efficiency_cache: dict[tuple, tuple[float, feature_build.Aux]] = {}
+
+
+def _efficiency_aux(games_df: pd.DataFrame) -> feature_build.Aux | None:
+    """The efficiency aux for the seasons in `games_df`, or None when there is none. Callers must treat None as
+    "cannot price this", never as zeros."""
+    seasons = tuple(sorted(int(s) for s in games_df["season"].dropna().unique())) if "season" in games_df.columns else ()
+    hit = _efficiency_cache.get(seasons)
+    if hit and time.time() - hit[0] < _EFFICIENCY_TTL_SECONDS:
+        return hit[1]
+    try:
+        frames = [cfbd_advanced.efficiency_frame_from_disk(years=list(seasons))]
+        if seasons and seasons[-1] == CURRENT_SEASON:
+            frames.append(cfbd_advanced.current_season_efficiency(CURRENT_SEASON, DATA_DIR / "cache" / "cfbd"))
+        frames = [f for f in frames if len(f)]
+        if not frames:
+            return None
+        frame = pd.concat(frames, ignore_index=True).assign(game_id=lambda d: d["game_id"].astype(str))
+        aux = feature_build.Aux(efficiency=frame.drop_duplicates(["game_id", "team"], keep="last"))
+    except Exception:  # noqa: BLE001 - fail closed: no aux means no total, never a guess
+        logger.exception("efficiency aux unavailable; the total prediction is withheld")
+        return None
+    _efficiency_cache[seasons] = (time.time(), aux)
+    return aux
+
+
+def _predict_total(models: dict, home: str, away: str, games_df: pd.DataFrame, gameday, conference_game) -> float | None:
+    """The total-points prediction, or None when it cannot be priced honestly (spec needs efficiency aux that is
+    missing). Models with no `total_spec` use the shared feature row, exactly as before."""
+    spec = models.get("total_spec")
+    if not spec:
+        return None
+    aux = _efficiency_aux(games_df)
+    if aux is None:
+        return None
+    row = feature_build.build_features_for_game(
+        home, away, games_df, gameday=gameday, conference_game=conference_game,
+        blocks=tuple(spec["blocks"]), aux=aux,
+    )
+    X = row.reindex(spec["feature_cols"]).fillna(0)
+    return float(models["total_model"].predict(X.to_frame().T)[0])  # named columns: the model was fitted on a frame
+
+
 def _predict_game_from_models(
     models: dict, home: str, away: str, games_df: pd.DataFrame,
     spread_line: float | None = None, total_line: float | None = None,
     gameday=None, conference_game=None,
 ) -> dict:
-    # Whatever blocks the fitted model was trained on, in the same order it recorded them. `aux` stays
-    # None until a block joins DEFAULT_BLOCKS: `_assemble` refuses a block with no aux rather than
-    # zero-filling it, so an epa-fitted model fails loudly instead of serving a fabricated row.
+    # Whatever blocks the fitted margin/win model was trained on, in the same order it recorded them. `aux` stays
+    # None for them: `_assemble` refuses a block with no aux rather than zero-filling it. The TOTAL model has its own
+    # spec (see manifest.TOTAL_SPEC) and gets its own aux in `_predict_total`.
     blocks = tuple(models.get("feature_blocks", DEFAULT_BLOCKS))
     feature_row = feature_build.build_features_for_game(
         home, away, games_df, gameday=gameday, conference_game=conference_game,
@@ -377,12 +424,16 @@ def _predict_game_from_models(
     else:
         predicted_margin = float(models["game_outcome_model"].predict(X.to_numpy().reshape(1, -1))[0])
 
-    predicted_total = float(models["total_model"].predict(X.to_numpy().reshape(1, -1))[0])
+    if models.get("total_spec"):
+        predicted_total = _predict_total(models, home, away, games_df, gameday, conference_game)
+    else:
+        predicted_total = float(models["total_model"].predict(X.to_numpy().reshape(1, -1))[0])
+    total_sigma = models["total_sigma"] if predicted_total is not None else None
 
     result = game_outcome.margin_to_probabilities(
         predicted_margin, models["sigma"],
         spread_line=spread_line, total_line=total_line,
-        predicted_total=predicted_total, total_sigma=models["total_sigma"],
+        predicted_total=predicted_total, total_sigma=total_sigma,
     )
     # Not part of the public API response shape, just handed straight to
     # whichever caller wants it (season_projection.py sums this across a
@@ -392,7 +443,7 @@ def _predict_game_from_models(
     result["predicted_margin"] = predicted_margin
     result["predicted_total"] = predicted_total
     result["sigma"] = models["sigma"]
-    result["total_sigma"] = models["total_sigma"]
+    result["total_sigma"] = total_sigma
     result["model_version"] = models.get("model_version")
     return result
 

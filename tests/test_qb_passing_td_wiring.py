@@ -99,7 +99,7 @@ def trained(monkeypatch, tmp_path):
     monkeypatch.setattr(
         manifest.player_stats, "fetch_weekly_player_stats", lambda s, g=None: _qb_player_stats(s, g)
     )
-    written = manifest.train_all(seasons)
+    written = manifest.train_all(seasons, total_spec=None)
     return written, tmp_path
 
 
@@ -155,7 +155,7 @@ def test_no_qb_history_removes_the_artefact_rather_than_saving_an_empty_one(monk
         _fake_player_stats,
     )
 
-    written = manifest.train_all(seasons)
+    written = manifest.train_all(seasons, total_spec=None)
     assert not (tmp_path / manifest.QB_PASSING_TD_MODEL_FILENAME).exists()
     # And the manifest says so, rather than omitting the key and leaving a reader
     # to infer "not trained" from an absence.
