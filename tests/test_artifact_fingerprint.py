@@ -66,7 +66,7 @@ def _trained_manifest(monkeypatch, tmp_path, seasons=(2021, 2022, 2023, 2024)):
                         lambda s: __import__("pandas").DataFrame(
                             {"team": [f"T{i}" for i in range(8)], "conference": ["X"] * 8}))
     monkeypatch.setattr(manifest.player_stats, "fetch_weekly_player_stats", _fake_player_stats)
-    return manifest.train_all(seasons=list(seasons))
+    return manifest.train_all(seasons=list(seasons), total_spec=None)
 
 
 def _rewrite(monkeypatch, tmp_path, mutate):

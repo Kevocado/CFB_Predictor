@@ -25,7 +25,9 @@ from . import epa, power_ratings, priors, rest_days, rolling_form
 
 #: Feature BLOCKS beyond the ten base columns. A block joins DEFAULT_BLOCKS only in the PR that shows it clears the
 #: evaluation bar (paired-bootstrap intervals + calibration gap, on identical held-out games).
-BLOCK_COLUMNS: dict[str, list[str]] = {"epa": epa.epa_columns(), "priors": priors.prior_columns()}
+BLOCK_COLUMNS: dict[str, list[str]] = {
+    "epa": epa.epa_columns(), "priors": priors.prior_columns(), "adj_epa": epa.adj_epa_columns(),
+}
 DEFAULT_BLOCKS: tuple[str, ...] = ()
 
 
@@ -97,6 +99,10 @@ def _assemble(games_df: pd.DataFrame, blocks: tuple[str, ...] = (), aux: Aux | N
         if aux is None or aux.efficiency is None:
             raise ValueError("the epa block needs aux.efficiency; refusing to default it to zeros")
         df = epa.add_epa_features(df, aux.efficiency)
+    if "adj_epa" in blocks:
+        if aux is None or aux.efficiency is None:
+            raise ValueError("the adj_epa block needs aux.efficiency; refusing to default it to zeros")
+        df = epa.add_adj_epa_features(df, aux.efficiency)
     if "priors" in blocks:
         df = priors.add_priors(df)
     return df

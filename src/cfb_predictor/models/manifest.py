@@ -12,6 +12,7 @@ from ..config import MODELS_DIR
 from ..data import games as games_data
 from ..data import player_stats
 from ..evaluate import walk_forward
+from ..data import cfbd_advanced
 from ..features import build as feature_build
 from ..features.build import DEFAULT_BLOCKS
 from ..features import player_usage
@@ -124,15 +125,54 @@ def _fbs_teams_by_season(seasons: list[int]) -> dict[int, set[str]]:
     return {season: set(games_data.fetch_fbs_teams(season)["team"]) for season in seasons}
 
 
+#: The TOTAL model's own spec. Margin and win share one feature set (DEFAULT_BLOCKS); the total does not: ridge on those
+#: columns plus the opponent-adjusted EPA block beat the XGBoost total on the repo's walk-forward (MAE 13.673 -> 13.398,
+#: paired-bootstrap CI of the gain [+0.19, +0.37]; total-bias gap 2.78 -> 0.51). `python -m cfb_predictor.tools.total_eval`
+#: re-runs that comparison. `total_spec=None` keeps the legacy XGBoost total on the shared columns.
+TOTAL_SPEC = {"kind": "ridge", "blocks": ["adj_epa"]}
+_TOTAL_FITTERS = {"ridge": game_outcome.fit_margin_regression, "xgb": game_outcome.fit_xgb_margin}
+_BLOCKS_NEEDING_EFFICIENCY = {"epa", "adj_epa"}
+
+
+def total_spec_columns(spec: dict) -> list[str]:
+    """The columns a total spec's model reads, derived from the CODE (never from a manifest)."""
+    return feature_build.feature_columns(tuple(spec["blocks"]))
+
+
 def fit_sigmas(folds: list[dict], chosen: str) -> tuple[float, float]:
     """(margin sigma, total sigma) from pooled out-of-fold residuals: the chosen game model for the margin and the
-    XGBoost total model for the total, each predicted on seasons it was never trained on."""
+    legacy XGBoost total model for the total, each predicted on seasons it was never trained on."""
     sigma = game_outcome.sigma_from_residuals(walk_forward.oof_residuals(folds, chosen, "margin"))
     total_sigma = game_outcome.sigma_from_residuals(walk_forward.oof_residuals(folds, "xgb", "total_points"))
     return sigma, total_sigma
 
 
-def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAULT_BLOCKS) -> dict:
+def fit_total(games_df: pd.DataFrame, fbs_teams: dict, seasons: list[int], min_train_seasons: int, spec: dict) -> tuple:
+    """(model, total_sigma) for a total spec. Sigma is from the out-of-fold residuals of THIS model on THESE features.
+
+    A spec that needs the efficiency aux raises when the committed data does not cover the training seasons: a total
+    model fitted on a zero-filled block is the fabricated-features defect, not a degraded mode."""
+    blocks = tuple(spec["blocks"])
+    aux = None
+    if _BLOCKS_NEEDING_EFFICIENCY & set(blocks):
+        efficiency = cfbd_advanced.efficiency_frame_from_disk(years=seasons)
+        covered = set(efficiency["season"].dropna().astype(int)) if len(efficiency) else set()
+        if not set(seasons) <= covered:
+            raise ValueError(f"no committed CFBD advanced stats for seasons {sorted(set(seasons) - covered)}; "
+                             "the total spec's epa block cannot be fitted")
+        aux = feature_build.Aux(efficiency=efficiency)
+    frame, cols = feature_build.build_training_frame(games_df, fbs_teams=fbs_teams, blocks=blocks, aux=aux)
+    folds = walk_forward.prepare_folds(games_df, fbs_teams=fbs_teams, min_train_seasons=min_train_seasons, blocks=blocks, aux=aux)
+    if not folds:
+        raise ValueError("Training the total model requires at least one walk-forward validation fold.")
+    kind = spec["kind"]
+    sigma = game_outcome.sigma_from_residuals(walk_forward.oof_residuals(folds, kind, "total_points"))
+    return _TOTAL_FITTERS[kind](frame[cols], frame["total_points"]), sigma
+
+
+def train_all(
+    seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAULT_BLOCKS, total_spec: dict | None = TOTAL_SPEC,
+) -> dict:
     """Fit all models, persist their artifacts, and return their manifest."""
     MODELS_DIR.mkdir(exist_ok=True, parents=True)
     seasons = seasons or games_data.default_completed_seasons(n=DEFAULT_TRAIN_SEASONS)
@@ -152,7 +192,6 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
 
     X_train = train_df[feature_cols]
     y_margin = train_df["margin"]
-    y_total = train_df["total_points"]
 
     if chosen == "elo":
         game_model = game_outcome.fit_elo_candidate(train_df)
@@ -164,7 +203,11 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
     # Sigma from OUT-OF-SAMPLE residuals (the pooled walk-forward folds), never from the training rows the model
     # was fitted on: an in-sample sigma is optimistic and made every published probability overconfident.
     sigma, total_sigma = fit_sigmas(folds, chosen)
-    total_model = game_outcome.fit_xgb_margin(X_train, y_total)
+    if total_spec is None:
+        total_model = game_outcome.fit_xgb_margin(X_train, train_df["total_points"])
+    else:
+        total_model, total_sigma = fit_total(
+            games_df, fbs_teams, seasons, max(1, len(seasons) - 2), total_spec)
 
     _save_pickle(game_model, _artifact_path(GAME_MODEL_FILENAME))
     _save_pickle(total_model, _artifact_path(TOTAL_MODEL_FILENAME))
@@ -208,11 +251,32 @@ def train_all(seasons: list[int] | None = None, blocks: tuple[str, ...] = DEFAUL
         "candidate_scores": candidate_scores,
         "sigma": sigma,
         "total_sigma": total_sigma,
+        **({"total_spec": _stored_total_spec(total_spec)} if total_spec else {}),
         "yardage_metrics": yardage_metrics,
         **({"qb_passing_td": qb_metric} if qb_metric else {}),
         "feature_blocks": list(blocks),
         "artifact_fingerprint": artifact_fingerprint(player_feature_cols),
     }
+    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
+    return manifest
+
+
+def _stored_total_spec(spec: dict) -> dict:
+    return {"kind": spec["kind"], "blocks": list(spec["blocks"]), "feature_cols": total_spec_columns(spec)}
+
+
+def retrain_total_only() -> dict:
+    """Refit ONLY the total model on the manifest's own seasons and patch the manifest; the game-outcome pickle, the
+    sigma and every player model are left byte-for-byte as committed. `trained_at` moves so `model_version` changes and
+    the snapshot job rebuilds every week instead of reusing weeks priced by the old total model."""
+    manifest = load_manifest()
+    seasons = manifest["seasons"]
+    games_df = games_data.load_training_data(seasons)
+    total_model, total_sigma = fit_total(
+        games_df, _fbs_teams_by_season(seasons), seasons, max(1, len(seasons) - 2), TOTAL_SPEC)
+    _save_pickle(total_model, _artifact_path(TOTAL_MODEL_FILENAME))
+    manifest.update(total_sigma=total_sigma, total_spec=_stored_total_spec(TOTAL_SPEC),
+                    trained_at=datetime.now(timezone.utc).isoformat())
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
     return manifest
 
@@ -343,6 +407,12 @@ def load_models() -> dict:
     # Before the unpickles: an artefact that cannot be verified must not reach
     # the point of being loaded, let alone scored against.
     _verify_artifact_fingerprint(manifest)
+    total_spec = manifest.get("total_spec")
+    if total_spec is not None and list(total_spec.get("feature_cols") or []) != total_spec_columns(total_spec):
+        raise StaleArtifactError(
+            f"{MANIFEST_PATH} records a total model fitted on {total_spec.get('feature_cols')} but the code's columns for "
+            f"blocks {total_spec.get('blocks')} are {total_spec_columns(total_spec)}. Re-run training "
+            "(`python -m cfb_predictor.models.manifest`).")
     player_models = {
         "feature_cols": manifest["player_feature_cols"],
         "anytime_td": _load_pickle(_artifact_path(ANYTIME_TD_MODEL_FILENAME)),
@@ -380,6 +450,7 @@ def load_models() -> dict:
         "model_version": model_version(manifest),
         "sigma": manifest["sigma"],
         "total_sigma": manifest["total_sigma"],
+        "total_spec": total_spec,
         "player_models": player_models,
         "feature_cols": manifest["feature_cols"],
         "player_feature_cols": manifest["player_feature_cols"],
@@ -388,4 +459,6 @@ def load_models() -> dict:
 
 
 if __name__ == "__main__":
-    train_all()
+    import sys
+
+    retrain_total_only() if "--total-only" in sys.argv else train_all()
