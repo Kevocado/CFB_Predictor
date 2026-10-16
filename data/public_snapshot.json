@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-16T19:48:02.351804+00:00",
+  "generated_at": "2026-10-16T23:04:27.284546+00:00",
   "model_version": "ridge@2026-10-15T14:44:28.432620+00:00",
   "season": 2026,
   "current_week": 7,
@@ -239401,8 +239401,8 @@
           "away_division": "fbs",
           "conference_game": true,
           "neutral_site": false,
-          "spread_line": null,
-          "total_line": null
+          "spread_line": 7.0,
+          "total_line": 51.5
         }
       ],
       "predictions": {
@@ -240176,8 +240176,10 @@
         "401858492": {
           "home_win_prob": 0.7748978598697234,
           "away_win_prob": 0.22510214013027663,
-          "home_cover_prob": null,
-          "away_cover_prob": null,
+          "home_cover_prob": 0.6340940616295294,
+          "away_cover_prob": 0.3659059383704706,
+          "over_prob": 0.5986563068920192,
+          "under_prob": 0.4013436931079808,
           "predicted_margin": 12.817792532472623,
           "predicted_total": 55.55470701175787,
           "sigma": 16.975533499014745,
@@ -492517,9 +492519,9 @@
       "projected_wins": 7.7,
       "projected_losses": 4.3,
       "projected_point_diff": 88.7,
-      "current_conference_rank": 5,
+      "current_conference_rank": 4,
       "projected_conference_rank": 4,
-      "conference_rank_delta": 1
+      "conference_rank_delta": 0
     },
     {
       "team": "Army",
@@ -492547,9 +492549,9 @@
       "projected_wins": 7.0,
       "projected_losses": 5.0,
       "projected_point_diff": 31.1,
-      "current_conference_rank": 4,
+      "current_conference_rank": 5,
       "projected_conference_rank": 6,
-      "conference_rank_delta": -2
+      "conference_rank_delta": -1
     },
     {
       "team": "East Carolina",
@@ -493102,9 +493104,9 @@
       "projected_wins": 5.7,
       "projected_losses": 6.3,
       "projected_point_diff": 9.3,
-      "current_conference_rank": 14,
+      "current_conference_rank": 13,
       "projected_conference_rank": 13,
-      "conference_rank_delta": 1
+      "conference_rank_delta": 0
     },
     {
       "team": "Illinois",
@@ -493117,9 +493119,9 @@
       "projected_wins": 5.3,
       "projected_losses": 6.7,
       "projected_point_diff": -5.4,
-      "current_conference_rank": 13,
+      "current_conference_rank": 14,
       "projected_conference_rank": 14,
-      "conference_rank_delta": -1
+      "conference_rank_delta": 0
     },
     {
       "team": "Purdue",
@@ -493387,9 +493389,9 @@
       "projected_wins": 8.2,
       "projected_losses": 3.8,
       "projected_point_diff": 127.3,
-      "current_conference_rank": 1,
+      "current_conference_rank": 2,
       "projected_conference_rank": 2,
-      "conference_rank_delta": -1
+      "conference_rank_delta": 0
     },
     {
       "team": "Western Michigan",
@@ -493432,9 +493434,9 @@
       "projected_wins": 6.6,
       "projected_losses": 5.4,
       "projected_point_diff": 48.7,
-      "current_conference_rank": 2,
+      "current_conference_rank": 1,
       "projected_conference_rank": 5,
-      "conference_rank_delta": -3
+      "conference_rank_delta": -4
     },
     {
       "team": "Buffalo",
@@ -497577,10 +497579,10 @@
         "ties": 0,
         "points_for_pg": 35.7,
         "points_against_pg": 43.2,
-        "off_epa_play": 0.283,
-        "def_epa_play": 0.282,
-        "off_success_rate": 0.459,
-        "def_success_rate": 0.531,
+        "off_epa_play": 0.293,
+        "def_epa_play": 0.355,
+        "off_success_rate": 0.457,
+        "def_success_rate": 0.552,
         "yards_per_play": null,
         "pass_rate": null,
         "turnover_margin": null,
@@ -497849,10 +497851,10 @@
         "ties": 0,
         "points_for_pg": 23.5,
         "points_against_pg": 23.8,
-        "off_epa_play": 0.092,
-        "def_epa_play": -0.054,
-        "off_success_rate": 0.396,
-        "def_success_rate": 0.33,
+        "off_epa_play": 0.034,
+        "def_epa_play": -0.023,
+        "off_success_rate": 0.388,
+        "def_success_rate": 0.336,
         "yards_per_play": null,
         "pass_rate": null,
         "turnover_margin": null,
@@ -498682,10 +498684,10 @@
         "ties": 0,
         "points_for_pg": 24.4,
         "points_against_pg": 23.0,
-        "off_epa_play": 0.145,
-        "def_epa_play": 0.118,
-        "off_success_rate": 0.439,
-        "def_success_rate": 0.404,
+        "off_epa_play": 0.151,
+        "def_epa_play": 0.074,
+        "off_success_rate": 0.445,
+        "def_success_rate": 0.394,
         "yards_per_play": null,
         "pass_rate": null,
         "turnover_margin": null,
@@ -503238,10 +503240,10 @@
         "ties": 0,
         "points_for_pg": 17.7,
         "points_against_pg": 26.9,
-        "off_epa_play": -0.137,
-        "def_epa_play": -0.056,
-        "off_success_rate": 0.308,
-        "def_success_rate": 0.355,
+        "off_epa_play": -0.146,
+        "def_epa_play": -0.015,
+        "off_success_rate": 0.312,
+        "def_success_rate": 0.376,
         "yards_per_play": null,
         "pass_rate": null,
         "turnover_margin": null,
@@ -505547,10 +505549,10 @@
         "ties": 0,
         "points_for_pg": 40.0,
         "points_against_pg": 32.2,
-        "off_epa_play": 0.276,
-        "def_epa_play": 0.155,
-        "off_success_rate": 0.499,
-        "def_success_rate": 0.453,
+        "off_epa_play": 0.338,
+        "def_epa_play": 0.18,
+        "off_success_rate": 0.52,
+        "def_success_rate": 0.452,
         "yards_per_play": null,
         "pass_rate": null,
         "turnover_margin": null,
@@ -506020,10 +506022,10 @@
         "ties": 0,
         "points_for_pg": 23.3,
         "points_against_pg": 24.6,
-        "off_epa_play": 0.025,
-        "def_epa_play": 0.065,
-        "off_success_rate": 0.424,
-        "def_success_rate": 0.45,
+        "off_epa_play": 0.038,
+        "def_epa_play": 0.023,
+        "off_success_rate": 0.415,
+        "def_success_rate": 0.434,
         "yards_per_play": null,
         "pass_rate": null,
         "turnover_margin": null,
@@ -508416,7 +508418,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 41.87,
+        "epa_total": 40.2,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -508462,7 +508464,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -2.9,
+        "epa_total": -3.89,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -508692,7 +508694,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 5.26,
+        "epa_total": 4.73,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -509244,7 +509246,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.4,
+        "epa_total": -2.76,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -509865,7 +509867,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -17.62,
+        "epa_total": -20.44,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -510026,7 +510028,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.55,
+        "epa_total": -1.62,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -511475,7 +511477,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 57.59,
+        "epa_total": 54.19,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -511613,7 +511615,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 45.6,
+        "epa_total": 43.36,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -511705,7 +511707,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 0.74,
+        "epa_total": -0.48,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -512073,7 +512075,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 20.44,
+        "epa_total": 26.48,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -512717,7 +512719,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 12.3,
+        "epa_total": 24.61,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -513752,7 +513754,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -34.43,
+        "epa_total": -42.13,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -514396,7 +514398,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 4.5,
+        "epa_total": 7.81,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -514925,7 +514927,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 17.37,
+        "epa_total": 18.31,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -515224,7 +515226,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -5.05,
+        "epa_total": -4.77,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -515799,7 +515801,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.16,
+        "epa_total": -3.97,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -516604,7 +516606,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 7.78,
+        "epa_total": 7.44,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -517110,7 +517112,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 14.01,
+        "epa_total": 10.2,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -517961,7 +517963,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 0.64,
+        "epa_total": -0.14,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -519157,7 +519159,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.62,
+        "epa_total": -0.2,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -519548,7 +519550,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.93,
+        "epa_total": -2.02,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -519824,7 +519826,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.08,
+        "epa_total": -1.23,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -520215,7 +520217,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 9.15,
+        "epa_total": 14.62,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -520376,7 +520378,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.95,
+        "epa_total": 2.48,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -520652,7 +520654,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -3.92,
+        "epa_total": -5.54,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -521250,7 +521252,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.65,
+        "epa_total": 2.28,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -521480,7 +521482,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 6.15,
+        "epa_total": 14.3,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -521917,7 +521919,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.57,
+        "epa_total": 7.26,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -522515,7 +522517,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.66,
+        "epa_total": 4.32,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -523021,7 +523023,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -3.79,
+        "epa_total": -6.72,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -523136,7 +523138,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.15,
+        "epa_total": -1.18,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -523642,7 +523644,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -6.16,
+        "epa_total": -17.42,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -523803,7 +523805,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 9.82,
+        "epa_total": 5.41,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -524723,7 +524725,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 18.82,
+        "epa_total": 26.33,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -524976,7 +524978,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 17.65,
+        "epa_total": 8.19,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -525643,7 +525645,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 14.36,
+        "epa_total": 18.29,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -525735,7 +525737,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 21.81,
+        "epa_total": 24.33,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -527391,7 +527393,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 23.66,
+        "epa_total": 31.28,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -530082,7 +530084,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 5.8,
+        "epa_total": 4.73,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -530450,7 +530452,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 68.57,
+        "epa_total": 60.66,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -532796,7 +532798,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 10.8,
+        "epa_total": 6.78,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -533164,7 +533166,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 29.4,
+        "epa_total": 20.51,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -533440,7 +533442,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 7.78,
+        "epa_total": 10.54,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -534222,7 +534224,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.72,
+        "epa_total": 0.5,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -535188,7 +535190,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 57.34,
+        "epa_total": 57.26,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -535970,7 +535972,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 18.87,
+        "epa_total": 36.73,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -536384,7 +536386,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 45.51,
+        "epa_total": 44.36,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -537189,7 +537191,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 21.15,
+        "epa_total": 21.9,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -537925,7 +537927,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 18.57,
+        "epa_total": 17.87,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -538224,7 +538226,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 42.14,
+        "epa_total": 41.4,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -538362,7 +538364,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 23.16,
+        "epa_total": 21.58,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -538546,7 +538548,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 5.48,
+        "epa_total": 4.49,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -538592,7 +538594,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.56,
+        "epa_total": 1.53,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -538638,7 +538640,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 9.29,
+        "epa_total": 5.38,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -541214,7 +541216,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 5.89,
+        "epa_total": 5.25,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -541283,7 +541285,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 4.4,
+        "epa_total": 5.12,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -541927,7 +541929,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.93,
+        "epa_total": 5.13,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -543284,7 +543286,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 5.65,
+        "epa_total": 3.51,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -546642,7 +546644,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.67,
+        "epa_total": 2.28,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -547102,7 +547104,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 15.88,
+        "epa_total": 14.12,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -547792,7 +547794,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -1.55,
+        "epa_total": -2.57,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -548459,7 +548461,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.95,
+        "epa_total": -1.33,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -548942,7 +548944,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 82.81,
+        "epa_total": 116.97,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -549310,7 +549312,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 6.74,
+        "epa_total": 3.04,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -549356,7 +549358,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 17.97,
+        "epa_total": 17.53,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -550046,7 +550048,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 14.99,
+        "epa_total": 10.87,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -550943,7 +550945,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -4.25,
+        "epa_total": -5.59,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -552553,7 +552555,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 19.67,
+        "epa_total": 23.04,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -553726,7 +553728,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 28.22,
+        "epa_total": 24.12,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -553772,7 +553774,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 4.65,
+        "epa_total": 7.3,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -554186,7 +554188,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 0.08,
+        "epa_total": -0.19,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -557613,7 +557615,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 3.0,
+        "epa_total": 3.29,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -558326,7 +558328,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 27.76,
+        "epa_total": 26.19,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -559108,7 +559110,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.38,
+        "epa_total": 2.3,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -560143,7 +560145,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.32,
+        "epa_total": -0.82,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -560879,7 +560881,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.53,
+        "epa_total": -0.42,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -563248,7 +563250,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -1.85,
+        "epa_total": -1.87,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -568308,7 +568310,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 8.55,
+        "epa_total": 10.11,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -568837,7 +568839,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 6.85,
+        "epa_total": 11.81,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -568860,7 +568862,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.05,
+        "epa_total": 0.09,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -569090,7 +569092,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -1.92,
+        "epa_total": -6.0,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -569803,7 +569805,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.34,
+        "epa_total": 2.45,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -572747,7 +572749,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 19.21,
+        "epa_total": 16.97,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -572977,7 +572979,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 10.18,
+        "epa_total": 16.18,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -573069,7 +573071,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 11.79,
+        "epa_total": 8.16,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -576036,7 +576038,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 13.36,
+        "epa_total": 11.42,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -576220,7 +576222,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 6.33,
+        "epa_total": 10.41,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -581096,7 +581098,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 8.3,
+        "epa_total": 8.22,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -583166,7 +583168,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 57.1,
+        "epa_total": 57.07,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -584684,7 +584686,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 11.65,
+        "epa_total": 12.51,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -586478,7 +586480,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 68.62,
+        "epa_total": 65.21,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -589123,7 +589125,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 14.09,
+        "epa_total": 14.01,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -590779,7 +590781,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.85,
+        "epa_total": 0.3,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -594091,7 +594093,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -10.42,
+        "epa_total": -12.18,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -594229,7 +594231,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 0.48,
+        "epa_total": 1.16,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -595379,7 +595381,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 2.96,
+        "epa_total": 2.51,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -596138,7 +596140,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 3.76,
+        "epa_total": 4.19,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -596805,7 +596807,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": null,
+        "epa_total": 0.1,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -597150,7 +597152,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 11.64,
+        "epa_total": 9.51,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -598277,7 +598279,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -7.73,
+        "epa_total": -8.42,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -598944,7 +598946,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -1.42,
+        "epa_total": -2.65,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -599680,7 +599682,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -15.12,
+        "epa_total": -19.57,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -599726,7 +599728,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 0.4,
+        "epa_total": 1.93,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -599749,7 +599751,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 6.13,
+        "epa_total": 8.05,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -599818,7 +599820,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -0.46,
+        "epa_total": -0.93,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -601175,7 +601177,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 1.52,
+        "epa_total": 2.88,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -602325,7 +602327,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -2.49,
+        "epa_total": -6.39,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -620564,7 +620566,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -2.24,
+        "epa_total": -1.99,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -625808,7 +625810,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -7.86,
+        "epa_total": -9.7,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -627579,7 +627581,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 6.59,
+        "epa_total": 4.74,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -628407,7 +628409,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 8.22,
+        "epa_total": 7.08,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -632731,7 +632733,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 3.54,
+        "epa_total": 3.23,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -632800,7 +632802,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": -1.11,
+        "epa_total": -1.41,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -635284,7 +635286,7 @@
         "attempts": 0,
         "interceptions": 0,
         "targets": 0,
-        "epa_total": 10.59,
+        "epa_total": 10.41,
         "target_share": null,
         "air_yards_share": null,
         "fantasy_ppr_pg": null
@@ -637846,24 +637848,24 @@
           "fantasy_ppr_pg": null
         },
         {
-          "player_id": "5141629",
-          "name": "Keelon Russell",
-          "team": "Alabama",
+          "player_id": "5148803",
+          "name": "Brad Jackson",
+          "team": "Texas State",
           "position": "QB",
           "games": 6,
-          "passing_yards": 1599,
-          "passing_tds": 12,
-          "rushing_yards": 225,
+          "passing_yards": 1439,
+          "passing_tds": 14,
+          "rushing_yards": 367,
           "rushing_tds": 4,
-          "receiving_yards": -10,
+          "receiving_yards": 0,
           "receiving_tds": 0,
-          "receptions": 1,
-          "carries": 46,
+          "receptions": 0,
+          "carries": 64,
           "completions": 0,
           "attempts": 0,
           "interceptions": 0,
           "targets": 0,
-          "epa_total": 111.76,
+          "epa_total": 116.97,
           "target_share": null,
           "air_yards_share": null,
           "fantasy_ppr_pg": null
