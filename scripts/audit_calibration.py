@@ -1,6 +1,6 @@
 """CFB calibration audit — real walk-forward on public snapshot data.
 
-Uses public_snapshot.json weeks 1-6 (2026 season, 437 completed games) with
+Uses public_snapshot.json weeks 1-6 (2026 season, 448 completed games) with
 model predictions (home_win_prob, predicted_margin, predicted_total, sigma, total_sigma)
 and actual outcomes. Research only: no src/ changes.
 """
@@ -194,7 +194,7 @@ def main():
         "## Interpretation\n"
         "- A market reads as **no problem** when its bias/slope/coverage interval straddles the ideal value.\n"
         "- Fix proposed only where paired-bootstrap CI excludes the ideal value (bias≠0, slope≠1, coverage≠nominal).\n"
-        "- Data source: public_snapshot.json weeks 1-6 (2026 season), 437 completed games with model predictions.\n"
+        "- Data source: public_snapshot.json weeks 1-6 (2026 season), 448 completed games with model predictions and actual outcomes.\n"
         "- No CFBD API key needed — used public snapshot data with model predictions and actual outcomes.\n"
         "- No fix shipped here: research only, no serving change proposed without paired-bootstrap CI excluding ideal on re-tested candidates.\n"
     )
