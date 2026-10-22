@@ -7,7 +7,7 @@
 
 ## One-line conclusion
 
-**The trailing league-residual correction does not improve CFB margin or total MAE on the 2026 snapshot (weeks 4-6, 188 games); flag stays OFF. Candidate to re-run at week 12.**
+**The trailing league-residual correction does not improve CFB margin or total MAE on the 2026 snapshot (weeks 4-7, 250 games); flag stays OFF. Candidate to re-run at week 12.**
 
 ---
 
@@ -44,25 +44,26 @@ Paired bootstrap resamples GAMES (N=2000) for the CI of (raw_abs_error - correct
 
 | Week | n | prior games | margin corr | total corr | margin MAE raw | margin MAE corr | total MAE raw | total MAE corr |
 |------|---|-------------|-------------|------------|----------------|-----------------|---------------|----------------|
-| 4 | 71 | 260 | +8.000 | +2.984 | 15.596 | 16.122 | 12.311 | 12.786 |
-| 5 | 59 | 331 | +6.824 | +2.307 | 14.738 | 15.008 | 13.541 | 13.675 |
-| 6 | 58 | 390 | +4.852 | +2.102 | 12.285 | 12.077 | 13.434 | 14.119 |
+| 4 | 71 | 260 | +8.000 | +4.000 | 15.596 | 16.122 | 11.873 | 12.436 |
+| 5 | 59 | 331 | +6.895 | +3.289 | 14.738 | 15.021 | 13.815 | 14.010 |
+| 6 | 58 | 390 | +4.734 | +2.520 | 12.285 | 12.061 | 13.473 | 14.150 |
+| 7 | 62 | 448 | +3.281 | +1.159 | 11.432 | 11.344 | 12.890 | 13.035 |
 
-### Pooled (188 games, weeks 4-6)
+### Pooled (250 games, weeks 4-7)
 
 | Metric | raw MAE | corr MAE | delta (raw-corr) | CI (paired games bootstrap) | excludes zero? |
 |--------|---------|----------|------------------|----------------------------|----------------|
-| Margin | 14.305 | 14.525 | -0.219 | (-1.151, +0.709) | **No** |
-| Total | 13.044 | 13.476 | -0.432 | (-0.775, -0.076) | Yes (but corrected is **worse**) |
+| Margin | 13.593 | 13.735 | -0.142 | (-0.869, +0.588) | **No** |
+| Total | 12.955 | 13.353 | -0.399 | (-0.762, -0.033) | Yes (but corrected is **worse**) |
 
 ### Buckets (margin)
 
 | Bucket | n | raw MAE | corr MAE | delta |
 |--------|---|---------|----------|-------|
-| home_fav (small, |margin|<14) | 39 | 9.962 | 15.433 | **-5.471 (worse)** |
-| home_fav (big, |margin|>=14) | 70 | 18.144 | 15.702 | +2.441 |
-| away_fav (small, |margin|<14) | 42 | 7.983 | 5.269 | +2.714 |
-| away_fav (big, |margin|>=14) | 37 | 18.798 | 21.845 | **-3.047 (worse)** |
+| home_fav (small, \|margin\|<14) | 60 | 10.288 | 14.609 | **-4.320 (worse)** |
+| home_fav (big, \|margin\|>=14) | 85 | 17.324 | 14.787 | +2.537 |
+| away_fav (small, \|margin\|<14) | 61 | 7.999 | 5.860 | +2.139 |
+| away_fav (big, \|margin\|>=14) | 44 | 18.644 | 21.428 | **-2.784 (worse)** |
 
 ---
 
@@ -70,7 +71,7 @@ Paired bootstrap resamples GAMES (N=2000) for the CI of (raw_abs_error - correct
 
 Ship (flag ON) only if:
 1. Paired-bootstrap CI of (raw_abs - corrected_abs) excludes zero for the metric, AND
-2. No bucket (home/away favourite, |margin|>=14) is worse.
+2. No bucket (home/away favourite, \|margin\|>=14) is worse.
 
 **Result: NO SHIP.**
 - Margin CI includes zero (-1.151, +0.709).

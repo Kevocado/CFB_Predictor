@@ -424,12 +424,14 @@ def _league_residual_correction_for_game(models, games_df, gameday):
     if completed.empty:
         return 0.0, 0.0
 
-    cache_key = (int(completed["week"].max()) if "week" in completed.columns else len(completed),
-                 models.get("model_version"))
+    completed = completed.sort_values(["week", "gameday"]) if "week" in completed.columns else completed.sort_values("gameday")
+
+    # Cache key includes the eligible history (gameday cutoff + count), not just
+    # max week, so two different cutoffs in the same week do not share a stale correction.
+    cache_key = (str(gameday), len(completed), models.get("model_version"))
     if cache_key in _LEAGUE_RESIDUAL_CACHE:
         return _LEAGUE_RESIDUAL_CACHE[cache_key]
 
-    completed = completed.sort_values(["week", "gameday"]) if "week" in completed.columns else completed.sort_values("gameday")
     window = game_outcome.LEAGUE_RESIDUAL_WINDOW
     tail = completed.tail(window)
 
@@ -441,12 +443,11 @@ def _league_residual_correction_for_game(models, games_df, gameday):
                 models, g["home_team"], g["away_team"], games_df[games_df["game_id"] != g["game_id"]],
                 gameday=g.get("gameday"), conference_game=g.get("conference_game"),
             )
-            if pt is None:
-                continue
             actual_margin = float(g["home_score"]) - float(g["away_score"])
-            actual_total = float(g["home_score"]) + float(g["away_score"])
             margin_residuals.append(actual_margin - pm)
-            total_residuals.append(actual_total - pt)
+            if pt is not None:
+                actual_total = float(g["home_score"]) + float(g["away_score"])
+                total_residuals.append(actual_total - pt)
         except Exception:
             continue
 

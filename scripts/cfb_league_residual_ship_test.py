@@ -192,9 +192,11 @@ def main() -> int:
     # Actually ship requires BOTH? Task: "Ship (flag ON) only if that CI excludes zero for the metric"
     # Per metric. But flag is single. Ship if at least one metric improves AND no bucket worse?
     # Let's require: ship if (margin CI excludes zero AND margin improves) or (total CI excludes zero AND total improves), and no bucket worse.
+    # The flag enables BOTH margin and total correction, so it must not be
+    # turned on when either metric's correction is significantly worse.
     margin_improves = ship_margin and (raw_m.mean() > corr_m.mean())
     total_improves = ship_total and (raw_t.mean() > corr_t.mean())
-    ship = (margin_improves or total_improves) and not bucket_worse
+    ship = margin_improves and total_improves and not bucket_worse
 
     print(f"\nSHIP DECISION: {'SHIP (flag ON)' if ship else 'NO SHIP (flag stays OFF)'}")
     if not ship:
