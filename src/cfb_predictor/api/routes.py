@@ -19,6 +19,7 @@ import pandas as pd
 import requests
 from fastapi import APIRouter, HTTPException
 
+from .. import config
 from ..config import (
     CURRENT_SEASON,
     DATA_DIR,
@@ -368,6 +369,7 @@ def _efficiency_aux(games_df: pd.DataFrame) -> feature_build.Aux | None:
     if hit and time.time() - hit[0] < _EFFICIENCY_TTL_SECONDS:
         return hit[1]
     try:
+        from ..data import cfbd_advanced
         frames = [cfbd_advanced.efficiency_frame_from_disk(years=list(seasons))]
         if seasons and seasons[-1] == CURRENT_SEASON:
             frames.append(cfbd_advanced.current_season_efficiency(CURRENT_SEASON, DATA_DIR / "cache" / "cfbd"))
@@ -400,14 +402,67 @@ def _predict_total(models: dict, home: str, away: str, games_df: pd.DataFrame, g
     return float(models["total_model"].predict(X.to_frame().T)[0])  # named columns: the model was fitted on a frame
 
 
-def _predict_game_from_models(
-    models: dict, home: str, away: str, games_df: pd.DataFrame,
-    spread_line: float | None = None, total_line: float | None = None,
-    gameday=None, conference_game=None,
-) -> dict:
-    # Whatever blocks the fitted margin/win model was trained on, in the same order it recorded them. `aux` stays
-    # None for them: `_assemble` refuses a block with no aux rather than zero-filling it. The TOTAL model has its own
-    # spec (see manifest.TOTAL_SPEC) and gets its own aux in `_predict_total`.
+_LEAGUE_RESIDUAL_CACHE: dict = {}
+
+
+def _league_residual_correction_for_game(models, games_df, gameday):
+    """Compute (margin_correction, total_correction) from completed prior games."""
+    if not config.CFB_LEAGUE_RESIDUAL_CORRECTION:
+        return 0.0, 0.0
+
+    completed = games_df[games_df["home_score"].notna() & games_df["away_score"].notna()].copy()
+    if completed.empty:
+        return 0.0, 0.0
+
+    if gameday is not None and "gameday" in completed.columns:
+        try:
+            gd = pd.Timestamp(gameday)
+            completed = completed[pd.to_datetime(completed["gameday"], errors="coerce") < gd]
+        except Exception:
+            pass
+
+    if completed.empty:
+        return 0.0, 0.0
+
+    cache_key = (int(completed["week"].max()) if "week" in completed.columns else len(completed),
+                 models.get("model_version"))
+    if cache_key in _LEAGUE_RESIDUAL_CACHE:
+        return _LEAGUE_RESIDUAL_CACHE[cache_key]
+
+    completed = completed.sort_values(["week", "gameday"]) if "week" in completed.columns else completed.sort_values("gameday")
+    window = game_outcome.LEAGUE_RESIDUAL_WINDOW
+    tail = completed.tail(window)
+
+    margin_residuals = []
+    total_residuals = []
+    for _, g in tail.iterrows():
+        try:
+            pm, pt = _raw_margin_total(
+                models, g["home_team"], g["away_team"], games_df[games_df["game_id"] != g["game_id"]],
+                gameday=g.get("gameday"), conference_game=g.get("conference_game"),
+            )
+            if pt is None:
+                continue
+            actual_margin = float(g["home_score"]) - float(g["away_score"])
+            actual_total = float(g["home_score"]) + float(g["away_score"])
+            margin_residuals.append(actual_margin - pm)
+            total_residuals.append(actual_total - pt)
+        except Exception:
+            continue
+
+    margin_corr = game_outcome.league_residual_correction(
+        margin_residuals, window=window, cap=game_outcome.LEAGUE_RESIDUAL_CAP_MARGIN,
+    )
+    total_corr = game_outcome.league_residual_correction(
+        total_residuals, window=window, cap=game_outcome.LEAGUE_RESIDUAL_CAP_TOTAL,
+    )
+    result = (margin_corr, total_corr)
+    _LEAGUE_RESIDUAL_CACHE[cache_key] = result
+    return result
+
+
+def _raw_margin_total(models, home, away, games_df, gameday=None, conference_game=None):
+    """Base (uncorrected) model prediction for margin and total."""
     blocks = tuple(models.get("feature_blocks", DEFAULT_BLOCKS))
     feature_row = feature_build.build_features_for_game(
         home, away, games_df, gameday=gameday, conference_game=conference_game,
@@ -428,6 +483,28 @@ def _predict_game_from_models(
         predicted_total = _predict_total(models, home, away, games_df, gameday, conference_game)
     else:
         predicted_total = float(models["total_model"].predict(X.to_numpy().reshape(1, -1))[0])
+    return predicted_margin, predicted_total
+
+
+def _predict_game_from_models(
+    models: dict, home: str, away: str, games_df: pd.DataFrame,
+    spread_line: float | None = None, total_line: float | None = None,
+    gameday=None, conference_game=None,
+) -> dict:
+    predicted_margin_raw, predicted_total_raw = _raw_margin_total(
+        models, home, away, games_df, gameday=gameday, conference_game=conference_game,
+    )
+
+    margin_correction = 0.0
+    total_correction = 0.0
+    if config.CFB_LEAGUE_RESIDUAL_CORRECTION:
+        margin_correction, total_correction = _league_residual_correction_for_game(
+            models, games_df, gameday,
+        )
+
+    predicted_margin = predicted_margin_raw + margin_correction
+    predicted_total = (predicted_total_raw + total_correction) if predicted_total_raw is not None else None
+
     total_sigma = models["total_sigma"] if predicted_total is not None else None
 
     result = game_outcome.margin_to_probabilities(
@@ -442,6 +519,10 @@ def _predict_game_from_models(
     # /prediction endpoint's response against a schema.
     result["predicted_margin"] = predicted_margin
     result["predicted_total"] = predicted_total
+    result["predicted_margin_raw"] = predicted_margin_raw
+    result["predicted_total_raw"] = predicted_total_raw
+    result["league_residual_correction_margin"] = margin_correction
+    result["league_residual_correction_total"] = total_correction
     result["sigma"] = models["sigma"]
     result["total_sigma"] = total_sigma
     result["model_version"] = models.get("model_version")

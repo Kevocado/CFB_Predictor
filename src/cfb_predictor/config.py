@@ -24,6 +24,14 @@ ROSTER_CACHE_DIR = CACHE_DIR / "rosters"
 
 CURRENT_SEASON = 2026  # bump each new CFB season (typically August)
 
+# Trailing league-residual correction (NBA-style). OFF by default: the ship
+# test (scripts/cfb_league_residual_ship_test.py) must show a paired-bootstrap
+# CI of (raw_abs_error - corrected_abs_error) excluding zero AND no bucket
+# worse before this flips to true. See docs/cfb_league_residual_correction.md.
+CFB_LEAGUE_RESIDUAL_CORRECTION = (
+    os.getenv("CFB_LEAGUE_RESIDUAL_CORRECTION", "false").lower() == "true"
+)
+
 # CollegeFootballData.com — this project's nfl_data_py equivalent, free but
 # API-keyed and rate-capped at 1,000 calls/month on the free tier. Request a
 # key once at collegefootballdata.com/key.
