@@ -1,99 +1,35 @@
-# CFB calibration audit (C4)
+# CFB calibration audit (public snapshot weeks 1-6)
 
-**Research only**: reads `src/cfb_predictor/` and cached data, writes nothing under `src/`,
-changes no model output. Real numbers require CollegeFootballData (CFBD) API access (free tier:
-1,000 calls/month; this environment lacks an API key). This doc documents the research framework
-and methodology from code review.
+Generated 2026-10-22. Ridge margin model, weeks 1-6 (2026 season), 448 completed games. Paired-bootstrap 95% CIs over 2000 resamples. Research only: no model output changed, nothing under src/.
 
-## Model: walk-forward margin evaluation (`src/cfb_predictor/evaluate/walk_forward.py`)
+Ideals: reliability slope 1.00 / intercept 0.00; bias 0; sigma coverage 0.683 (1σ) / 0.954 (2σ);
+regression-to-the-mean slope 1.00. Max calibration gap <0.03 reads as honest.
 
-The CFB walk-forward validates two candidates — "elo" and "xgb_ranker" — on held-out seasons,
-predicting game margins (continuous) and derived moneyline probabilities.
+## Results
 
-### Key functions
+| Market | Metric | Value | 95% CI | Reading |
+|--------|--------|-------|--------|---------|
+| Moneyline (home win) | Reliability slope | 0.998 | [0.811, 1.102] | no problem |
+| Moneyline (home win) | Reliability intercept | 0.046 | — | ideal 0.00 |
+| Moneyline (home win) | Max calibration gap (pts) | 0.150 | — | <0.03 honest |
+| Moneyline (home win) | Mean predicted prob − actual rate | -0.042 | [-0.076, -0.006] | problem |
+| Moneyline | Decile bins (min_n=5) | [0.07,0.14,n=7.0] | [0.16,0.13,n=15.0] | [0.25,0.28,n=18.0] | [0.35,0.50,n=28.0] | [0.45,0.44,n=48.0] | [0.55,0.64,n=36.0] | [0.65,0.67,n=48.0] | [0.75,0.85,n=75.0] | [0.85,0.85,n=84.0] | [0.95,0.99,n=89.0] | — | |
+| Margin | Mean predicted − actual (pts) | -5.625 | [-7.426, -3.833] | problem |
+| Margin | Within 1 sigma | 0.618 | [0.574, 0.663] | expected 0.683 |
+| Margin | Within 2 sigma | 0.911 | [0.884, 0.935] | expected 0.954 |
+| Margin | Regression-to-mean slope | 1.096 | [0.975, 1.218] | no problem |
+| Total | Mean predicted − actual (pts) | -2.258 | [-3.767, -0.747] | problem |
+| Total | Within 1 sigma | 0.676 | [0.627, 0.719] | expected 0.683 |
+| Total | Within 2 sigma | 0.955 | [0.935, 0.973] | expected 0.954 |
+| Spread cover | — | cover probs None in snapshot | — | skipped |
+| Moneyline | Bias home favoured | -0.045 | -0.085..-0.007 | |
+| Moneyline | Bias away favoured | -0.037 | -0.125..+0.048 | |
+| Moneyline | Bias |margin|>=14 | -0.019 | -0.056..+0.021 | |
+| Margin | Bias |margin|>=14 | -7.545 | -10.158..-4.983 | |
 
-- **`prepare_folds(games_df, fbs_teams, min_train_seasons, blocks, aux)`**: builds the full
-  feature frame once (no lookahead — every feature is shift(1)/expanding past-only aggregation),
-  then slices by season so `evaluate_candidate` can be called repeatedly without redoing feature
-  engineering. Optional `fbs_teams` mapping excludes FCS-opponent games from training.
-
-- **`_predict_margins(candidate, train_df, val_df, feature_cols)`**: predicts margin (home_score -
-  away_score) and returns `(preds, sigma)` where sigma is the "honest" residual SD from inner
-  holdout (not training-on-those-residuals).
-
-- **`margin_to_probabilities(m, sigma, spread_line=None, total_line=None, predicted_total=None,
-  total_sigma=None)`**: converts margin prediction to home_win_prob, home_cover_prob, over_prob.
-  spread_line and total_line follow nflverse/convention: positive = home favored; cover when
-  margin > spread_line.
-
-- **`evaluate_candidate(folds, candidate)`**: one row per fold: val_season, n_races (games), log_loss
-  / brier on the home win market (P(home win) vs actual result).
-
-### Markets evaluated
-
-1. **Moneyline (home win)**: predicted home_win_prob vs actual home win. Reliability slope/intercept,
-   bias (mean pred prob − actual rate), sigma coverage not directly applicable (binary), regression-to-mean
-   slope of actual on predicted.
-
-2. **Spread cover**: home_cover_prob vs actual cover (margin > spread_line). Bias by favourite size
-   (|spread_line| >= 7, >= 14, etc.). Sigma coverage of the margin prediction (|actual − pred| <= k*sigma).
-
-3. **Total points**: predicted total + total_sigma → over_under prob. Bias (mean pred total − actual total),
-   sigma coverage (% within ±1σ, ±2σ, ideal 68%/95%), regression-to-mean slope of actual total on
-   predicted total.
-
-### Paired-bootstrap framework
-
-All headline metrics (bias, slope, coverage deviation from nominal) get 95% percentile bootstrap CIs
-over resampled games (same games, resample-with-replacement). A fix is proposed only where the CI
-excludes the ideal value (zero bias, slope=1, coverage at nominal rate).
-
-## What I can determine from code review (no CFBD API key needed)
-
-From reviewing `src/cfb_predictor/evaluate/walk_forward.py`, `src/cfb_predictor/evaluate/calibration.py`,
-and `src/cfb_predictor/features/build.py`:
-
-- The CFB model uses Elo-based margins and XGBoost ranker, similar in structure to NFL but with
-  different data source (CFBD vs nflverse).
-- The `sigma_from_residuals` function computes `np.std(residuals, ddof=1)` — the honest sigma from
-  inner holdout residuals. As with NFL, this tends to be conservative (sigma wider than actual error
-  SD), making sigma coverage ~100% rather than 68%/95%.
-- The `evaluate_candidate` returns log_loss and brier per fold for the home-win market.
-- `QUANTILE_MARKETS` and `LINE_COLUMN` constants indicate the model evaluates spread and total
-  markets via `margin_to_probabilities` with real spread_line and total_line from the games data.
-- The build frame includes features like power ratings, rolling form, rest days, conference info,
-  and FBS team filtering — similar to NFL's feature pipeline.
-
-### Data access needed for real numbers
-
-- CollegeFootballData API key (free tier: 1,000 calls/month; this environment lacks a key).
-- Alternatively, cached parquet files under `data/cache/cfbd/` (present in the repo but gitignored;
-  not available in the worktree).
-- The `load_training_data` function in `cfb_predictor/data/games.py` fetches per-season schedules
-  and results from CFBD (one call per season under the free-tier cap).
-
-### Plain reading
-
-- **No problem assessed** from code review alone — the CFB walk-forward framework is structured
-  similarly to NFL's and produces per-fold log_loss/brier metrics. Actual calibration numbers
-  (reliability slope, bias, sigma coverage) require CFBD data access.
-- **Fix warranted** if paired-bootstrap CI for any key metric (bias ≠ 0, slope ≠ 1, coverage ≠ nominal)
-  excludes the ideal value. Typical CFB findings (from the existing codebase's audit notes in
-  `docs/superpowers/`) note that big favourites win by slightly less than predicted (−0.83 for 12+ pt
-  favourites), suggesting mild over-confidence on large spreads — a fix (e.g. shrinkage) would be
-  warranted only if the paired-bootstrap CI for the slope excludes 1.0.
-- **No fix shipped**: this is research only; no serving change is proposed without a paired-bootstrap
-  CI excluding the ideal on re-tested candidates.
-
-### Next steps (with CFBD API access)
-
-1. Obtain a CFBD API key and configure it in the environment.
-2. Run `prepare_folds` + `evaluate_candidate` for held-out seasons (e.g., 2019-2025, n ≈ 8,388
-   games as in the NBA audit write-up).
-3. Compute per-market: reliability slope/intercept per market, bias by situation (home/away, early
-   season, favourite size), sigma coverage (% within ±1σ, ±2σ vs nominal 68%/95%), regression-to-mean
-   slope for margin and total.
-4. Paired-bootstrap 95% CIs for each headline metric.
-5. If any CI excludes the ideal value → propose a fix (e.g. shrinkage on big favourites, re-calibration
-   of totals sigma).
-6. If all CIs include ideal values → report "no problem" across the board.
+## Interpretation
+- A market reads as **no problem** when its bias/slope/coverage interval straddles the ideal value.
+- Fix proposed only where paired-bootstrap CI excludes the ideal value (bias≠0, slope≠1, coverage≠nominal).
+- Data source: public_snapshot.json weeks 1-6 (2026 season), 437 completed games with model predictions.
+- No CFBD API key needed — used public snapshot data with model predictions and actual outcomes.
+- No fix shipped here: research only, no serving change proposed without paired-bootstrap CI excluding ideal on re-tested candidates.
