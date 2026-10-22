@@ -771,7 +771,9 @@ def _get_player_props_live(season: int, week: int):
 
 @router.get("/track-record")
 def get_track_record():
-    return store.get_track_record()
+    result = store.get_track_record()
+    result["calibration"] = store.get_calibration()
+    return result
 
 
 @router.get("/kalshi-feed")
