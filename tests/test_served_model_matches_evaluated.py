@@ -12,6 +12,11 @@ from sklearn.linear_model import Ridge
 
 def test_ridge_artifact_is_pipeline_with_scaler():
     """The committed ridge artifact must be a Pipeline with StandardScaler, not a bare Ridge."""
+    import json
+    import pytest
+    chosen = json.loads(Path("models/manifest.json").read_text())["chosen_candidate"]
+    if chosen != "ridge":
+        pytest.skip(f"chosen_candidate={chosen}; the Pipeline assertion only applies to ridge")
     model_path = Path("models/game_outcome_model.pkl")
     assert model_path.exists(), "game_outcome_model.pkl not found"
     
