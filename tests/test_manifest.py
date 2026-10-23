@@ -61,7 +61,7 @@ def test_train_all_writes_a_manifest_with_chosen_candidate(monkeypatch, tmp_path
     monkeypatch.setattr(manifest.games_data, "fetch_fbs_teams", _fake_fbs_teams)
     monkeypatch.setattr(manifest.player_stats, "fetch_weekly_player_stats", _fake_player_stats)
 
-    result = manifest.train_all(seasons=seasons)
+    result = manifest.train_all(seasons=seasons, total_spec=None)
 
     assert result["chosen_candidate"] in ("elo", "ridge", "xgb")
     assert (tmp_path / "manifest.json").exists()
@@ -85,7 +85,7 @@ def test_load_models_round_trips_after_train_all(monkeypatch, tmp_path):
     monkeypatch.setattr(manifest.games_data, "fetch_fbs_teams", _fake_fbs_teams)
     monkeypatch.setattr(manifest.player_stats, "fetch_weekly_player_stats", _fake_player_stats)
 
-    manifest.train_all(seasons=seasons)
+    manifest.train_all(seasons=seasons, total_spec=None)
     models = manifest.load_models()
 
     assert "game_outcome_model" in models
