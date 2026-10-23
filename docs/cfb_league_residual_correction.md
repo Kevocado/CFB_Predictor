@@ -93,8 +93,9 @@ The correction does not help on this thin sample. **Flag stays OFF.**
 
 **Serving wiring is deliberately absent.** The correction is research code only;
 nothing in `src/cfb_predictor/` references it. It must not be wired into
-serving until the week-12 re-run of the ship test passes (CI excludes zero
-with no bucket worse).
+serving until the week-12 re-run of the ship test passes the full ship gate:
+margin CI excludes zero AND improves, total CI excludes zero AND improves,
+no bucket worse, and no metric significantly worse.
 
 ### Serving bugs found (do not repeat when wiring)
 
