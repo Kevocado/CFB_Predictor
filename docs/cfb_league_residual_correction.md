@@ -84,18 +84,38 @@ The correction does not help on this thin sample. **Flag stays OFF.**
 
 ## Code
 
-- Flag: `config.CFB_LEAGUE_RESIDUAL_CORRECTION` (env `CFB_LEAGUE_RESIDUAL_CORRECTION`, default `false`).
-- Correction function: `game_outcome.league_residual_correction(residuals, window, cap)`.
-- Constants: `LEAGUE_RESIDUAL_WINDOW=300`, `LEAGUE_RESIDUAL_CAP_MARGIN=8.0`, `LEAGUE_RESIDUAL_CAP_TOTAL=4.0`.
-- Serving wiring: `_predict_game_from_models` applies correction when flag is ON (cached per week).
+- Correction function (research only): `scripts/league_residual.py` —
+  `league_residual_correction(residuals, window, cap)` and constants
+  `LEAGUE_RESIDUAL_WINDOW=300`, `LEAGUE_RESIDUAL_CAP_MARGIN=8.0`,
+  `LEAGUE_RESIDUAL_CAP_TOTAL=4.0`.
 - Ship test: `scripts/cfb_league_residual_ship_test.py`.
+- Tests: `tests/test_league_residual_correction.py` (imports from `scripts/`).
 
-**`src/cfb_predictor/models/league_residual_correction` is research code behind a flag; not active in serving.**
+**Serving wiring is deliberately absent.** The correction is research code only;
+nothing in `src/cfb_predictor/` references it. It must not be wired into
+serving until the week-12 re-run of the ship test passes (CI excludes zero
+with no bucket worse).
+
+### Serving bugs found (do not repeat when wiring)
+
+When the correction is eventually wired into serving, two bugs were found in
+the previous (now removed) serving implementation and must be avoided:
+
+1. **Cache key must include the eligible history.** The correction cache was
+   keyed on `(max week, model_version)`, so two different gameday cutoffs
+   inside the same week shared a stale correction. Key on the gameday cutoff
+   and the count of eligible completed games instead.
+2. **Completed games must be sorted chronologically before taking the tail.**
+   The previous code sorted by `["week", "gameday"]` but the tail window
+   assumed chronological order; an unsorted frame made the "last N games"
+   mean something other than the most recent N. Sort by gameday (then week)
+   before `.tail(window)`.
 
 ---
 
 ## Follow-up
 
 Candidate to re-run at week 12 with more completed games. The correction is
-implemented and tested behind the flag; flipping the flag to `true` requires
-re-running the ship test and confirming the CI excludes zero with no bucket worse.
+implemented and tested as research code under `scripts/`; wiring it into
+serving requires fixing the two bugs above, re-running the ship test, and
+confirming the CI excludes zero with no bucket worse.

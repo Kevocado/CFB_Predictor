@@ -18,19 +18,27 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import numpy as np
 
-from cfb_predictor.models import game_outcome
+# Research module lives under scripts/; make it importable when run as a script.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from league_residual import (  # noqa: E402
+    LEAGUE_RESIDUAL_WINDOW,
+    LEAGUE_RESIDUAL_CAP_MARGIN,
+    LEAGUE_RESIDUAL_CAP_TOTAL,
+    league_residual_correction,
+)
 
 SNAPSHOT = "data/public_snapshot.json"
 WARMUP_WEEK = 4
 N_BOOT = 2000
 SEED = 20261022
-WINDOW = game_outcome.LEAGUE_RESIDUAL_WINDOW  # 300
-CAP_MARGIN = game_outcome.LEAGUE_RESIDUAL_CAP_MARGIN  # 8
-CAP_TOTAL = game_outcome.LEAGUE_RESIDUAL_CAP_TOTAL  # 4
+WINDOW = LEAGUE_RESIDUAL_WINDOW  # 300
+CAP_MARGIN = LEAGUE_RESIDUAL_CAP_MARGIN  # 8
+CAP_TOTAL = LEAGUE_RESIDUAL_CAP_TOTAL  # 4
 
 
 def _games_with_preds(snap, week):
@@ -105,8 +113,8 @@ def main() -> int:
         prior = _residuals_from_weeks(snap, prior_weeks)
         margin_resid = [r[0] - r[1] for r in prior]
         total_resid = [r[2] - r[3] for r in prior]
-        corr_m = game_outcome.league_residual_correction(margin_resid, window=WINDOW, cap=CAP_MARGIN)
-        corr_t = game_outcome.league_residual_correction(total_resid, window=WINDOW, cap=CAP_TOTAL)
+        corr_m = league_residual_correction(margin_resid, window=WINDOW, cap=CAP_MARGIN)
+        corr_t = league_residual_correction(total_resid, window=WINDOW, cap=CAP_TOTAL)
         print(f"\nWeek {k}: prior games={len(prior)}  margin_corr={corr_m:+.3f}  total_corr={corr_t:+.3f}")
 
         week_games = _games_with_preds(snap, k)
@@ -169,12 +177,18 @@ def main() -> int:
 
     # Ship decision
     print("\n" + "=" * 70)
-    ship_margin = ci_m[0] > 0 or ci_m[1] < 0  # CI excludes zero
-    # CI excludes zero means 0 not in [lo, hi]
-    ship_margin = not (ci_m[0] <= 0 <= ci_m[1])
-    ship_total = not (ci_t[0] <= 0 <= ci_t[1])
-    print(f"Margin CI excludes zero: {ship_margin}  {ci_m}")
-    print(f"Total  CI excludes zero: {ship_total}  {ci_t}")
+    # Each metric is decided separately: CI excludes zero AND correction improves.
+    margin_ci_excludes_zero = not (ci_m[0] <= 0 <= ci_m[1])
+    total_ci_excludes_zero = not (ci_t[0] <= 0 <= ci_t[1])
+    margin_improves = margin_ci_excludes_zero and (raw_m.mean() > corr_m.mean())
+    total_improves = total_ci_excludes_zero and (raw_t.mean() > corr_t.mean())
+    print(f"Margin CI excludes zero: {margin_ci_excludes_zero}  {ci_m}")
+    print(f"Total  CI excludes zero: {total_ci_excludes_zero}  {ci_t}")
+
+    # A metric that is significantly WORSE (CI entirely below zero) blocks
+    # enabling the flag, which turns on BOTH corrections.
+    margin_significantly_worse = ci_m[1] < 0
+    total_significantly_worse = ci_t[1] < 0
 
     # bucket worse check: corrected MAE > raw MAE for any bucket
     bucket_worse = False
@@ -188,15 +202,10 @@ def main() -> int:
                 bucket_worse = True
                 print(f"  BUCKET WORSE: {bucket_name}_{mag} raw={rr.mean():.3f} corr={cc.mean():.3f}")
 
-    ship = (ship_margin or ship_total) and not bucket_worse
-    # Actually ship requires BOTH? Task: "Ship (flag ON) only if that CI excludes zero for the metric"
-    # Per metric. But flag is single. Ship if at least one metric improves AND no bucket worse?
-    # Let's require: ship if (margin CI excludes zero AND margin improves) or (total CI excludes zero AND total improves), and no bucket worse.
-    # The flag enables BOTH margin and total correction, so it must not be
-    # turned on when either metric's correction is significantly worse.
-    margin_improves = ship_margin and (raw_m.mean() > corr_m.mean())
-    total_improves = ship_total and (raw_t.mean() > corr_t.mean())
-    ship = margin_improves and total_improves and not bucket_worse
+    # Ship only if BOTH margin and total improve (each decided separately),
+    # and no metric is significantly worse, and no bucket is worse.
+    ship = (margin_improves and total_improves and not bucket_worse
+            and not margin_significantly_worse and not total_significantly_worse)
 
     print(f"\nSHIP DECISION: {'SHIP (flag ON)' if ship else 'NO SHIP (flag stays OFF)'}")
     if not ship:
