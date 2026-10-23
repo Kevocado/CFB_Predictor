@@ -368,7 +368,6 @@ def _efficiency_aux(games_df: pd.DataFrame) -> feature_build.Aux | None:
     if hit and time.time() - hit[0] < _EFFICIENCY_TTL_SECONDS:
         return hit[1]
     try:
-        from ..data import cfbd_advanced
         frames = [cfbd_advanced.efficiency_frame_from_disk(years=list(seasons))]
         if seasons and seasons[-1] == CURRENT_SEASON:
             frames.append(cfbd_advanced.current_season_efficiency(CURRENT_SEASON, DATA_DIR / "cache" / "cfbd"))
@@ -401,8 +400,14 @@ def _predict_total(models: dict, home: str, away: str, games_df: pd.DataFrame, g
     return float(models["total_model"].predict(X.to_frame().T)[0])  # named columns: the model was fitted on a frame
 
 
-def _raw_margin_total(models, home, away, games_df, gameday=None, conference_game=None):
-    """Base (uncorrected) model prediction for margin and total."""
+def _predict_game_from_models(
+    models: dict, home: str, away: str, games_df: pd.DataFrame,
+    spread_line: float | None = None, total_line: float | None = None,
+    gameday=None, conference_game=None,
+) -> dict:
+    # Whatever blocks the fitted margin/win model was trained on, in the same order it recorded them. `aux` stays
+    # None for them: `_assemble` refuses a block with no aux rather than zero-filling it. The TOTAL model has its own
+    # spec (see manifest.TOTAL_SPEC) and gets its own aux in `_predict_total`.
     blocks = tuple(models.get("feature_blocks", DEFAULT_BLOCKS))
     feature_row = feature_build.build_features_for_game(
         home, away, games_df, gameday=gameday, conference_game=conference_game,
@@ -423,18 +428,6 @@ def _raw_margin_total(models, home, away, games_df, gameday=None, conference_gam
         predicted_total = _predict_total(models, home, away, games_df, gameday, conference_game)
     else:
         predicted_total = float(models["total_model"].predict(X.to_numpy().reshape(1, -1))[0])
-    return predicted_margin, predicted_total
-
-
-def _predict_game_from_models(
-    models: dict, home: str, away: str, games_df: pd.DataFrame,
-    spread_line: float | None = None, total_line: float | None = None,
-    gameday=None, conference_game=None,
-) -> dict:
-    predicted_margin, predicted_total = _raw_margin_total(
-        models, home, away, games_df, gameday=gameday, conference_game=conference_game,
-    )
-
     total_sigma = models["total_sigma"] if predicted_total is not None else None
 
     result = game_outcome.margin_to_probabilities(
