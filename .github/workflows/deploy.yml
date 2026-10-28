@@ -42,7 +42,7 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
-          # GHCR_PAT, not GITHUB_TOKEN. The package ghcr.io/kevocado/cfb-predictor is
+          # GHCR_PAT, not GITHUB_TOKEN. The package ghcr.io/kevinsigey/cfb-predictor is
           # USER-scoped, not linked to this repository, and GITHUB_TOKEN may only write to
           # packages linked to its own repo -- so the push died with
           # `denied: permission_denied: write_package` after the image had already built
@@ -67,10 +67,10 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/kevocado/cfb-predictor:${{ github.sha }}
-            ghcr.io/kevocado/cfb-predictor:latest
-          cache-from: type=registry,ref=ghcr.io/kevocado/cfb-predictor:buildcache
-          cache-to: type=registry,ref=ghcr.io/kevocado/cfb-predictor:buildcache,mode=max
+            ghcr.io/kevinsigey/cfb-predictor:${{ github.sha }}
+            ghcr.io/kevinsigey/cfb-predictor:latest
+          cache-from: type=registry,ref=ghcr.io/kevinsigey/cfb-predictor:buildcache
+          cache-to: type=registry,ref=ghcr.io/kevinsigey/cfb-predictor:buildcache,mode=max
 
 
   # Legacy. Azure is being cut over to the VPS, so this stays off unless the
@@ -95,7 +95,7 @@ jobs:
             --name cfb-predictor \
             --resource-group predictor-hub-rg \
             --environment proudbay-f56b8dfa.eastus2 \
-            --image ghcr.io/kevocado/cfb-predictor:${{ github.sha }} \
+            --image ghcr.io/kevinsigey/cfb-predictor:${{ github.sha }} \
             --target-port 8003 \
             --ingress external \
             --min-replicas 0 \
@@ -109,7 +109,7 @@ jobs:
           az containerapp update \
             --name cfb-predictor \
             --resource-group predictor-hub-rg \
-            --image ghcr.io/kevocado/cfb-predictor:${{ github.sha }} \
+            --image ghcr.io/kevinsigey/cfb-predictor:${{ github.sha }} \
             --min-replicas 0 \
             --max-replicas 3 || true
 

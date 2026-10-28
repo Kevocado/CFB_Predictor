@@ -36,7 +36,7 @@ WORKFLOW = WORKFLOW_DIR / "deploy.yml"
 
 # Must match `image:` in vps-stack/compose.yml. If either side changes, the
 # deploy pushes a tag the stack never pulls.
-IMAGE = "ghcr.io/kevocado/cfb-predictor"
+IMAGE = "ghcr.io/kevinsigey/cfb-predictor"
 # Must match the service key in vps-stack/compose.yml, which is what
 # `bin/deploy` is called with.
 SERVICE = "cfb"
@@ -172,7 +172,7 @@ def check_image(text: str) -> None:
     # a credential that outlives the repo and has to be rotated by hand.
     #
     # GHCR_PAT is accepted ONLY because the package is not linked to this repository.
-    # ghcr.io/kevocado/cfb-predictor is user-scoped, and GITHUB_TOKEN may only write to
+    # ghcr.io/kevinsigey/cfb-predictor is user-scoped, and GITHUB_TOKEN may only write to
     # packages linked to its own repository -- so the push died with
     # `denied: permission_denied: write_package` AFTER the image had built and
     # tagged correctly. Linking a package is a one-time action in package settings and
